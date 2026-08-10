@@ -8,10 +8,13 @@
     "build": "vite build"
   },
   "dependencies": {
+    "papaparse": "^5.5.3",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@types/papaparse": "^5.3.16",
     "@types/chrome": "^0.0.270",
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
