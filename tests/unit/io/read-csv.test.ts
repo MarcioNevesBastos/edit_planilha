@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readCsv } from '../../../src/io/source/read-csv';
 import { SourceReadError } from '../../../src/io/source/read-source';
 import {
@@ -48,6 +48,51 @@ describe('readCsv', () => {
     ], 'dados.csv'), { delimiter: ';' })).rejects.toMatchObject({
       name: 'SourceReadError',
       issues: [expect.objectContaining({ code: 'MissingQuotes' })],
+    } satisfies Partial<SourceReadError>);
+  });
+
+  it('reads browser files in chunks without calling File.text for the whole file', async () => {
+    class ChunkedFileReader {
+      result: string | null = null;
+      onload: ((event: { target: ChunkedFileReader }) => void) | null = null;
+      onerror: (() => void) | null = null;
+
+      readAsText(chunk: Blob): void {
+        void chunk.text().then((result) => {
+          this.result = result;
+          this.onload?.({ target: this });
+        }, () => this.onerror?.());
+      }
+    }
+
+    class StreamingOnlyFile extends File {
+      override text(): Promise<string> {
+        return Promise.reject(new Error('read the file in chunks'));
+      }
+    }
+
+    vi.stubGlobal('FileReader', ChunkedFileReader);
+
+    try {
+      const dataset = await readCsv(new StreamingOnlyFile([
+        'ID;Nome\n1;Ana\n2;Bruno\n',
+      ], 'dados.csv'), { delimiter: ';' });
+
+      expect(dataset.rows.map((row) => row.values.nome__1)).toEqual(['Ana', 'Bruno']);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('raises structured errors when a row contains populated fields beyond its headers', async () => {
+    await expect(readCsv(new File([
+      'ID;Nome\n1;Ana;descartado\n',
+    ], 'dados.csv'), { delimiter: ';' })).rejects.toMatchObject({
+      name: 'SourceReadError',
+      issues: [expect.objectContaining({
+        code: 'TooManyFields',
+        row: 2,
+      })],
     } satisfies Partial<SourceReadError>);
   });
 });

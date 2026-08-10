@@ -2,11 +2,13 @@ import type { Dataset } from '../../domain/dataset/types';
 
 export interface ReadSourceOptions {
   delimiter?: string;
+  maxCells?: number;
   sheetName?: string;
 }
 
 export interface SourceReadIssue {
   code: string;
+  details?: Record<string, number>;
   message: string;
   row?: number;
 }

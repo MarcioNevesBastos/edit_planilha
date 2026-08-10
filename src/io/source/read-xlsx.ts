@@ -3,13 +3,15 @@ import { createDataset } from './dataset';
 import { SourceReadError, type ReadSourceOptions } from './types';
 import type { CellValue, DatasetColumn } from '../../domain/dataset/types';
 
+const DEFAULT_XLSX_MAX_CELLS = 250_000;
+
 export async function listXlsxSheets(file: File): Promise<string[]> {
   return (await readWorkbook(file)).SheetNames;
 }
 
 export async function readXlsx(
   file: File,
-  options: Pick<ReadSourceOptions, 'sheetName'> = {},
+  options: Pick<ReadSourceOptions, 'sheetName' | 'maxCells'> = {},
 ) {
   const workbook = await readWorkbook(file);
   const sheetName = options.sheetName ?? workbook.SheetNames[0];
@@ -29,29 +31,59 @@ export async function readXlsx(
   }
 
   const range = XLSX.utils.decode_range(rangeReference);
-  const matrix = Array.from(
-    { length: range.e.r - range.s.r + 1 },
-    (_, relativeRow) => Array.from(
-      { length: range.e.c - range.s.c + 1 },
-      (_, relativeColumn) => cellValue(worksheet[XLSX.utils.encode_cell({
-        r: range.s.r + relativeRow,
-        c: range.s.c + relativeColumn,
-      })]),
-    ),
-  );
-  const [headerRow = [], ...sourceRows] = matrix;
-  const indexedRows = sourceRows
-    .map((row, index) => ({
-      row,
-      sourceRowNumber: range.s.r + index + 2,
-    }))
-    .filter(({ row }) => row.some((value) => value !== null && value !== ''));
+  assertSafeRange(range, options.maxCells ?? DEFAULT_XLSX_MAX_CELLS);
+
+  const headerRow = readWorksheetRow(worksheet, range, range.s.r);
+  const indexedRows: { row: CellValue[]; sourceRowNumber: number }[] = [];
+
+  for (let rowIndex = range.s.r + 1; rowIndex <= range.e.r; rowIndex += 1) {
+    const row = readWorksheetRow(worksheet, range, rowIndex);
+
+    if (row.some((value) => value !== null && value !== '')) {
+      indexedRows.push({ row, sourceRowNumber: rowIndex + 1 });
+    }
+  }
 
   return createDataset(
     headerRow,
     indexedRows.map(({ row }) => row),
     indexedRows.map(({ sourceRowNumber }) => sourceRowNumber),
     detectXlsxColumnTypes(worksheet, range),
+  );
+}
+
+function assertSafeRange(range: XLSX.Range, maxCells: number): void {
+  if (!Number.isSafeInteger(maxCells) || maxCells < 1) {
+    throw new SourceReadError([{
+      code: 'InvalidCellBound',
+      message: 'maxCells must be a positive whole number',
+    }]);
+  }
+
+  const rowCount = range.e.r - range.s.r + 1;
+  const columnCount = range.e.c - range.s.c + 1;
+  const cellCount = rowCount * columnCount;
+
+  if (cellCount > maxCells) {
+    throw new SourceReadError([{
+      code: 'WorksheetRangeTooLarge',
+      message: `Selected sheet range contains ${cellCount} cells, exceeding the ${maxCells} cell import bound`,
+      details: { cellCount, maxCells },
+    }]);
+  }
+}
+
+function readWorksheetRow(
+  worksheet: XLSX.WorkSheet,
+  range: XLSX.Range,
+  rowIndex: number,
+): CellValue[] {
+  return Array.from(
+    { length: range.e.c - range.s.c + 1 },
+    (_, relativeColumn) => cellValue(worksheet[XLSX.utils.encode_cell({
+      r: rowIndex,
+      c: range.s.c + relativeColumn,
+    })]),
   );
 }
 

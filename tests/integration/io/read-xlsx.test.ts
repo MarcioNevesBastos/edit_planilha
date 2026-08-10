@@ -43,4 +43,16 @@ describe('XLSX source reader', () => {
     });
     expect(dataset.columns.some((column) => column.header === 'Ignorar')).toBe(false);
   });
+
+  it('rejects selected sheets that exceed the configured cell bound before materializing them', async () => {
+    await expect(readSource(await sourceFixture(), {
+      sheetName: 'Dados',
+      maxCells: 8,
+    })).rejects.toMatchObject({
+      name: 'SourceReadError',
+      issues: [expect.objectContaining({
+        code: 'WorksheetRangeTooLarge',
+      })],
+    });
+  });
 });
