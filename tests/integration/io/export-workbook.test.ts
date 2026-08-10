@@ -86,9 +86,51 @@ describe('exportWorkbook', () => {
 
     expectParts(exported, untouched);
     expectParts(pkg, originalPackage);
+    expectParts(
+      exported,
+      new Map([...originalPackage].filter(([path]) => path !== 'xl/worksheets/sheet1.xml')),
+    );
+  });
+
+  it('writes values into a legal self-closing destination row', async () => {
+    const originalWorksheet = textPart(pkg, 'xl/worksheets/sheet1.xml');
+    pkg.updatePart(
+      'xl/worksheets/sheet1.xml',
+      originalWorksheet.replace(
+        /<row r="3">[\s\S]*?<\/row>/,
+        '<row r="3"/>',
+      ),
+    );
+
+    const output = await exportWorkbook(input({
+      mode: 'replace',
+      headerRow: 2,
+      clears: [{ existingRowId: 'old-1', destinationRow: 3 }],
+      inserts: [{
+        incomingRowId: 'new-1',
+        destinationRow: 3,
+        values: {
+          source_id: 201,
+          source_product: 'Linha preenchida',
+          source_quantity: 1,
+          source_price: 8,
+        },
+      }],
+      updates: [],
+      kept: [],
+      duplicates: [],
+      rejected: [],
+      assignments: [{ kind: 'insert', incomingRowId: 'new-1', destinationRow: 3 }],
+    }, valid));
+    const exported = await openOoxmlPackage(await output.arrayBuffer());
+    const worksheet = textPart(exported, 'xl/worksheets/sheet1.xml');
+
+    expect(worksheet).toContain('<row r="3"><c r="A3"><v>201</v></c>');
+    expect(worksheet).toContain('<c r="B3" t="inlineStr"><is><t>Linha preenchida</t></is></c>');
   });
 
   it('expands append rows with shifted formulas and destination styles', async () => {
+    const originalPackage = snapshotParts(pkg, pkg.listParts());
     const writePlan: WritePlan = {
       mode: 'append',
       headerRow: 2,
@@ -127,6 +169,12 @@ describe('exportWorkbook', () => {
     expect(worksheet).toContain('<c r="E7" s="2"><f>C7*D7</f>');
     expect(worksheet).toContain('<c r="E8" s="2"><f>SUM(E5:E7)</f>');
     expect(textPart(exported, 'xl/tables/table1.xml')).toContain('ref="A2:D7"');
+    expectParts(
+      exported,
+      new Map([...originalPackage].filter(([path]) => (
+        path !== 'xl/worksheets/sheet1.xml' && path !== 'xl/tables/table1.xml'
+      ))),
+    );
   });
 
   it('applies planned updates and valid inserts but routes invalid rows only to rejection sheet', async () => {

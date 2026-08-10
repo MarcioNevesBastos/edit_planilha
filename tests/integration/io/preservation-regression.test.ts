@@ -91,6 +91,7 @@ describe('export compatibility risks', () => {
       dataStartRow: 3,
       templateRow: 5,
       tablePath: undefined,
+      definedName: 'DestinoPrincipal',
       columns: [{ id: 'target_product', column: 'E' }],
     });
     risky.mappings = [{
@@ -100,6 +101,7 @@ describe('export compatibility risks', () => {
       score: 1,
       status: 'accepted',
     }];
+    risky.writePlan.inserts[0].values = { source_product: 'Mochila' };
 
     const risks = await scanExportRisks(risky);
 
@@ -147,6 +149,113 @@ describe('export compatibility risks', () => {
     ];
 
     await expect(exportWorkbook(reviewed)).resolves.toBeInstanceOf(Blob);
+  });
+
+  it('blocks an empty mapping set and a planned source field without one accepted mapping', async () => {
+    const empty = baseInput();
+    empty.mappings = [];
+    await expect(exportWorkbook(empty)).rejects.toMatchObject({
+      risks: expect.arrayContaining([
+        expect.objectContaining({ code: 'empty-mappings', severity: 'hard' }),
+      ]),
+    });
+
+    const partial = baseInput();
+    partial.mappings = partial.mappings.filter(({ sourceColumnId }) => sourceColumnId === 'source_id');
+    await expect(exportWorkbook(partial)).rejects.toMatchObject({
+      risks: expect.arrayContaining([
+        expect.objectContaining({ code: 'missing-planned-source-mapping', severity: 'hard' }),
+      ]),
+    });
+  });
+
+  it('detects formula risk in a row that will be cloned from the template', async () => {
+    const inputWithFutureRow = baseInput({
+      range: 'A2:E5',
+      tablePath: undefined,
+      definedName: 'DestinoPrincipal',
+      columns: [{ id: 'target_product', column: 'E' }],
+    });
+    inputWithFutureRow.mappings = [{
+      sourceColumnId: 'source_product',
+      destinationColumnId: 'target_product',
+      confidence: 'exact',
+      score: 1,
+      status: 'accepted',
+    }];
+    inputWithFutureRow.writePlan.inserts[0].destinationRow = 7;
+
+    const risks = await scanExportRisks(inputWithFutureRow);
+
+    expect(risks).toContainEqual(expect.objectContaining({
+      code: 'formula-overwrite',
+      severity: 'soft',
+    }));
+  });
+
+  it('hard-blocks query-backed tables and related query-table parts', async () => {
+    pkg.updatePart(
+      'xl/tables/table1.xml',
+      textPart('xl/tables/table1.xml').replace(
+        '<table ',
+        '<table tableType="queryTable" ',
+      ),
+    );
+    pkg.addPart('xl/queryTables/queryTable1.xml', '<queryTable><queryTableFieldId>1</queryTableFieldId></queryTable>');
+
+    const risks = await scanExportRisks(baseInput());
+
+    expect(risks).toContainEqual(expect.objectContaining({
+      code: 'unsupported-query-table',
+      severity: 'hard',
+    }));
+  });
+
+  it('blocks unnamed range expansion and updates an explicitly declared defined name', async () => {
+    const unnamed = baseInput({ range: 'A2:E5', tablePath: undefined });
+    await expect(exportWorkbook(unnamed)).rejects.toMatchObject({
+      risks: expect.arrayContaining([
+        expect.objectContaining({ code: 'named-range-expansion-unsupported', severity: 'hard' }),
+      ]),
+    });
+
+    const named = baseInput({
+      range: 'A2:E5',
+      tablePath: undefined,
+      definedName: 'DestinoPrincipal',
+    });
+    const output = await exportWorkbook(named);
+    const exported = await openOoxmlPackage(await output.arrayBuffer());
+
+    expect(new TextDecoder().decode(exported.readPart('xl/workbook.xml'))).toContain(
+      "<definedName name=\"DestinoPrincipal\">'Dados Modelo'!$A$2:$E$6</definedName>",
+    );
+  });
+
+  it('hard-blocks XML 1.0 forbidden control characters before export', async () => {
+    const unsafe = baseInput();
+    unsafe.writePlan.inserts[0].values.source_product = 'Produto\u0000inválido';
+
+    await expect(exportWorkbook(unsafe)).rejects.toMatchObject({
+      risks: expect.arrayContaining([
+        expect.objectContaining({ code: 'forbidden-xml-character', severity: 'hard' }),
+      ]),
+    });
+  });
+
+  it('reports invalid destination geometry as an export compatibility risk', async () => {
+    const invalid = baseInput({ dataStartRow: 6 });
+
+    expect(await scanExportRisks(invalid)).toContainEqual(expect.objectContaining({
+      code: 'invalid-destination-geometry',
+      severity: 'hard',
+    }));
+
+    await expect(exportWorkbook(invalid)).rejects.toMatchObject({
+      risks: expect.arrayContaining([
+        expect.objectContaining({ code: 'invalid-destination-geometry', severity: 'hard' }),
+      ]),
+    });
   });
 });
 

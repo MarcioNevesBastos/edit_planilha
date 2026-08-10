@@ -30,6 +30,7 @@ export interface ExportDestination {
   dataStartRow: number;
   templateRow: number;
   tablePath?: string;
+  definedName?: string;
   columns: readonly ExportDestinationColumn[];
 }
 
@@ -136,6 +137,7 @@ export async function scanExportRisks(input: ExportInput): Promise<ExportRisk[]>
   }
 
   if (destinationRange) {
+    scanDestinationGeometry(input, destinationRange, addRisk);
     const resolvedMappings = resolveMappings(input);
     for (const mapping of resolvedMappings) {
       const column = columnNumber(mapping.destinationColumn);
@@ -150,6 +152,7 @@ export async function scanExportRisks(input: ExportInput): Promise<ExportRisk[]>
     }
     scanWorksheetRisks(input, sheet, resolvedMappings, addRisk);
     scanTableRisks(input, sheet, resolvedMappings, addRisk);
+    scanNamedRangeRisks(input, index.definedNames, destinationRange, addRisk);
   }
 
   return risks;
@@ -187,6 +190,17 @@ export async function exportWorkbook(input: ExportInput): Promise<Blob> {
     ...(input.destination.tablePath ? { tablePath: input.destination.tablePath } : {}),
   });
 
+  const destinationRange = parseRange(input.destination.range);
+  const targetLastRow = Math.max(destinationRange.endRow, maxDestinationRow);
+  if (input.destination.definedName && targetLastRow > destinationRange.endRow) {
+    updateDefinedName(
+      working,
+      index.workbookPath,
+      input.destination.definedName,
+      targetLastRow,
+    );
+  }
+
   const worksheet = decode(working.readPart(sheet.path));
   working.updatePart(
     sheet.path,
@@ -206,9 +220,21 @@ export async function exportWorkbook(input: ExportInput): Promise<Blob> {
 }
 
 function scanMappingRisks(input: ExportInput, addRisk: (risk: ExportRisk) => void): void {
+  if (input.mappings.length === 0) {
+    addRisk({
+      code: 'empty-mappings',
+      severity: 'hard',
+      message: 'At least one reviewed mapping or explicit ignore is required for export.',
+    });
+  }
   const destinationIds = new Set(input.destination.columns.map(({ id }) => id));
   const destinationColumns = new Set<string>();
+  const mappingsBySource = new Map<string, number>();
   for (const mapping of input.mappings) {
+    mappingsBySource.set(
+      mapping.sourceColumnId,
+      (mappingsBySource.get(mapping.sourceColumnId) ?? 0) + 1,
+    );
     if (mapping.status !== 'accepted') {
       addRisk({
         code: 'unreviewed-mapping',
@@ -249,6 +275,26 @@ function scanMappingRisks(input: ExportInput, addRisk: (risk: ExportRisk) => voi
     }
     destinationColumns.add(normalizedColumn);
   }
+
+  const plannedSourceFields = new Set(
+    [...input.writePlan.inserts, ...input.writePlan.updates].flatMap(
+      ({ values }) => Object.keys(values),
+    ),
+  );
+  for (const sourceColumnId of plannedSourceFields) {
+    const matchingCount = mappingsBySource.get(sourceColumnId) ?? 0;
+    const accepted = input.mappings.find((mapping) => (
+      mapping.sourceColumnId === sourceColumnId
+      && mapping.status === 'accepted'
+    ));
+    if (matchingCount !== 1 || !accepted) {
+      addRisk({
+        code: 'missing-planned-source-mapping',
+        severity: 'hard',
+        message: `Planned source field ${sourceColumnId} does not have exactly one accepted mapping or ignore.`,
+      });
+    }
+  }
 }
 
 function scanValidationState(input: ExportInput, addRisk: (risk: ExportRisk) => void): void {
@@ -257,6 +303,102 @@ function scanValidationState(input: ExportInput, addRisk: (risk: ExportRisk) => 
       code: 'inconsistent-validation-state',
       severity: 'hard',
       message: 'Validation state does not match its issue list.',
+    });
+  }
+}
+
+function scanDestinationGeometry(
+  input: ExportInput,
+  destinationRange: CellRange,
+  addRisk: (risk: ExportRisk) => void,
+): void {
+  const invalid = destinationRange.startColumn > destinationRange.endColumn
+    || destinationRange.startRow > destinationRange.endRow
+    || destinationRange.startRow < 1
+    || destinationRange.endRow > 1048576
+    || input.writePlan.headerRow !== destinationRange.startRow
+    || input.destination.dataStartRow <= input.writePlan.headerRow
+    || input.destination.dataStartRow > destinationRange.endRow
+    || input.destination.templateRow < input.destination.dataStartRow
+    || input.destination.templateRow > destinationRange.endRow;
+  if (invalid) {
+    addRisk({
+      code: 'invalid-destination-geometry',
+      severity: 'hard',
+      message: 'Destination range, header, data-start, and template rows are inconsistent.',
+    });
+  }
+
+  for (const destination of input.destination.columns) {
+    if (!/^[A-Z]{1,3}$/i.test(destination.column)) {
+      addRisk({
+        code: 'invalid-destination-geometry',
+        severity: 'hard',
+        message: `Invalid physical destination column: ${destination.column}.`,
+      });
+      continue;
+    }
+    const column = columnNumber(destination.column);
+    if (column < destinationRange.startColumn || column > destinationRange.endColumn) {
+      addRisk({
+        code: 'invalid-destination-geometry',
+        severity: 'hard',
+        message: `Destination column ${destination.column} is outside ${input.destination.range}.`,
+      });
+    }
+  }
+}
+
+function scanNamedRangeRisks(
+  input: ExportInput,
+  definedNames: readonly {
+    name: string;
+    formula: string;
+    sheetName: string | null;
+    range: string | null;
+  }[],
+  destinationRange: CellRange,
+  addRisk: (risk: ExportRisk) => void,
+): void {
+  const targetLastRow = Math.max(
+    destinationRange.endRow,
+    ...validWriteActions(
+      input.writePlan,
+      new Set(input.validationResult.issues.map(({ rowId }) => rowId)),
+    ).map(({ destinationRow }) => destinationRow),
+  );
+  const expands = targetLastRow > destinationRange.endRow;
+  const matchingNames = definedNames.filter((definedName) => (
+    definedName.sheetName === input.destination.sheetName
+    && definedName.range !== null
+    && normalizeRange(definedName.range) === normalizeRange(input.destination.range)
+  ));
+
+  if (input.destination.definedName) {
+    const declared = definedNames.find(({ name }) => name === input.destination.definedName);
+    if (!declared || declared.sheetName !== input.destination.sheetName || !declared.range
+      || normalizeRange(declared.range) !== normalizeRange(input.destination.range)) {
+      addRisk({
+        code: 'invalid-defined-name-metadata',
+        severity: 'hard',
+        message: `Defined-name metadata does not identify ${input.destination.range}.`,
+      });
+    }
+    if (declared?.formula && !canExtendDefinedNameFormula(declared.formula)) {
+      addRisk({
+        code: 'named-range-formula-unsupported',
+        severity: 'hard',
+        message: `Defined-name formula cannot be extended safely: ${input.destination.definedName}.`,
+      });
+    }
+    return;
+  }
+
+  if (expands && matchingNames.length > 0) {
+    addRisk({
+      code: 'named-range-expansion-unsupported',
+      severity: 'hard',
+      message: 'Appending to a named destination requires explicit defined-name metadata.',
     });
   }
 }
@@ -292,6 +434,30 @@ function scanPlanRisks(input: ExportInput, addRisk: (risk: ExportRisk) => void):
           message: 'Non-finite numbers cannot be represented safely in OOXML cells.',
         });
       }
+      if (typeof value === 'string' && containsForbiddenXmlCharacter(value)) {
+        addRisk({
+          code: 'forbidden-xml-character',
+          severity: 'hard',
+          message: 'Cell text contains a character forbidden by XML 1.0.',
+        });
+      }
+    }
+  }
+  for (const row of input.rejectedRows ?? []) {
+    const values = [
+      ...Object.keys(row.originalRelevantFields),
+      ...Object.values(row.originalRelevantFields),
+      row.errorField,
+      row.invalidValue,
+      row.rejectionReason,
+      row.failedRuleOrTransform,
+    ];
+    if (values.some((value) => typeof value === 'string' && containsForbiddenXmlCharacter(value))) {
+      addRisk({
+        code: 'forbidden-xml-character',
+        severity: 'hard',
+        message: 'Rejected-row text contains a character forbidden by XML 1.0.',
+      });
     }
   }
 }
@@ -305,6 +471,7 @@ function scanWorksheetRisks(
   const worksheet = decode(input.package.readPart(sheet.path));
   const invalidRowIds = new Set(input.validationResult.issues.map(({ rowId }) => rowId));
   const writeCells = targetCells(input.writePlan, mappings, invalidRowIds);
+  const destinationRange = parseRange(input.destination.range);
   const mergedRanges = [...worksheet.matchAll(/<mergeCell\b[^>]*\bref="([^"]+)"[^>]*\/?\s*>/g)]
     .flatMap((match) => safeParseRanges(match[1]));
 
@@ -318,8 +485,20 @@ function scanWorksheetRisks(
   }
 
   if (writeCells.some(({ column, row }) => {
-    const cell = findCell(findRow(worksheet, row) ?? '', `${columnName(column)}${row}`);
-    return cell?.includes('<f') ?? false;
+    const reference = `${columnName(column)}${row}`;
+    const rowXml = findRow(worksheet, row);
+    const existingCell = findCell(rowXml ?? '', reference);
+    if (existingCell?.includes('<f')) {
+      return true;
+    }
+    if (row <= destinationRange.endRow && rowXml) {
+      return false;
+    }
+    const templateReference = `${columnName(column)}${input.destination.templateRow}`;
+    return findCell(
+      findRow(worksheet, input.destination.templateRow) ?? '',
+      templateReference,
+    )?.includes('<f') ?? false;
   })) {
     addRisk({
       code: 'formula-overwrite',
@@ -350,10 +529,17 @@ function scanTableRisks(
     ? touchedTables.find(({ path }) => path === input.destination.tablePath)
     : null;
   if (!selected || normalizeRange(selected.range) !== normalizeRange(input.destination.range)) {
+    const queryBacked = touchedTables.some(({ path }) => (
+      /(?:\btableType\s*=\s*"queryTable"|\bqueryTableFieldId\b)/i.test(
+        decode(input.package.readPart(path)),
+      )
+    )) || hasRelatedQueryTablePart(input.package, sheet.path);
     addRisk({
-      code: 'unknown-table-structure',
+      code: queryBacked ? 'unsupported-query-table' : 'unknown-table-structure',
       severity: 'hard',
-      message: 'The write range touches a table that was not selected as the destination model.',
+      message: queryBacked
+        ? 'Query-backed tables are not supported for export.'
+        : 'The write range touches a table that was not selected as the destination model.',
       partPath: selected?.path ?? touchedTables[0].path,
     });
     return;
@@ -361,14 +547,65 @@ function scanTableRisks(
 
   const tableXml = decode(input.package.readPart(selected.path));
   if (/<(?:extLst|queryTable|calculatedColumnFormula|totalsRowFormula|xmlColumnPr)\b/i.test(tableXml)
-    || /\btotalsRowShown="1"/i.test(tableXml)) {
+    || /(?:\btableType\s*=\s*"queryTable"|\bqueryTableFieldId\b)/i.test(tableXml)
+    || hasRelatedQueryTablePart(input.package, sheet.path)) {
     addRisk({
-      code: 'unknown-table-structure',
+      code: /queryTable|queryTableFieldId/i.test(tableXml)
+        || hasRelatedQueryTablePart(input.package, sheet.path)
+        ? 'unsupported-query-table'
+        : 'unknown-table-structure',
       severity: 'hard',
-      message: 'The selected table contains structures that cannot be updated safely.',
+      message: /queryTable|queryTableFieldId/i.test(tableXml)
+        || hasRelatedQueryTablePart(input.package, sheet.path)
+        ? 'Query-backed tables are not supported for export.'
+        : 'The selected table contains structures that cannot be updated safely.',
       partPath: selected.path,
     });
   }
+}
+
+function hasRelatedQueryTablePart(pkg: OoxmlPackage, worksheetPath: string): boolean {
+  const worksheetRelationshipsPath = relationshipPartPath(worksheetPath);
+  if (pkg.hasPart(worksheetRelationshipsPath)) {
+    const relationships = decode(pkg.readPart(worksheetRelationshipsPath));
+    if (/queryTable/i.test(relationships)) {
+      return true;
+    }
+  }
+
+  return pkg.listParts()
+    .filter((path) => /queryTable/i.test(path) || /\.xml$/i.test(path))
+    .some((path) => /queryTable/i.test(path) && /queryTable/i.test(decode(pkg.readPart(path))));
+}
+
+function canExtendDefinedNameFormula(formula: string): boolean {
+  return /^.*!\$?[A-Z]{1,3}\$?\d+:\$?[A-Z]{1,3}\$?\d+$/i.test(formula);
+}
+
+function updateDefinedName(
+  pkg: OoxmlPackage,
+  workbookPath: string,
+  definedName: string,
+  targetLastRow: number,
+): void {
+  const workbook = decode(pkg.readPart(workbookPath));
+  const namePattern = escapeRegExp(definedName);
+  const pattern = new RegExp(
+    `(<definedName\\b[^>]*\\bname="${namePattern}"[^>]*>)([\\s\\S]*?)(</definedName>)`,
+  );
+  const match = workbook.match(pattern);
+  if (!match) {
+    throw new Error(`Defined name was not found: ${definedName}`);
+  }
+  const formula = match[2];
+  const updatedFormula = formula.replace(
+    /(\$?[A-Z]{1,3}\$?\d+:\$?[A-Z]{1,3}\$?)\d+$/i,
+    `$1${targetLastRow}`,
+  );
+  if (updatedFormula === formula) {
+    throw new Error(`Defined-name formula cannot be extended: ${definedName}`);
+  }
+  pkg.updatePart(workbookPath, workbook.replace(match[0], `${match[1]}${updatedFormula}${match[3]}`));
 }
 
 function applyWritePlan(
@@ -429,8 +666,11 @@ function writeWorksheetCell(
 }
 
 function ensureRow(worksheet: string, rowNumber: number, templateRowNumber: number): string {
-  if (findRow(worksheet, rowNumber)) {
-    return worksheet;
+  const existing = findRow(worksheet, rowNumber);
+  if (existing) {
+    return existing.endsWith('/>')
+      ? worksheet.replace(existing, existing.replace(/\/>$/, '></row>'))
+      : worksheet;
   }
   const template = findRow(worksheet, templateRowNumber);
   if (!template) {
@@ -441,8 +681,8 @@ function ensureRow(worksheet: string, rowNumber: number, templateRowNumber: numb
   if (sheetData === undefined) {
     throw new Error('Worksheet has no sheetData element.');
   }
-  const rows = [...sheetData.matchAll(/<row\b[^>]*\br="(\d+)"[^>]*(?:\/>|>[\s\S]*?<\/row>)/g)];
-  const next = rows.find((match) => Number(match[1]) > rowNumber)?.[0];
+  const rows = [...sheetData.matchAll(/<row\b[^>]*\br="(\d+)"[^>]*\/>|<row\b[^>]*\br="(\d+)"[^>]*>[\s\S]*?<\/row>/g)];
+  const next = rows.find((match) => Number(match[1] ?? match[2]) > rowNumber)?.[0];
   const updatedData = next
     ? sheetData.replace(next, shifted + next)
     : sheetData + shifted;
@@ -534,7 +774,7 @@ function resolveMappings(input: ExportInput): ResolvedMapping[] {
 }
 
 function findRow(worksheet: string, rowNumber: number): string | null {
-  const rows = worksheet.match(/<row\b[^>]*(?:\/>|>[\s\S]*?<\/row>)/g) ?? [];
+  const rows = worksheet.match(/<row\b[^>]*\/>|<row\b[^>]*>[\s\S]*?<\/row>/g) ?? [];
   return rows.find((row) => Number(attribute(row, 'r')) === rowNumber) ?? null;
 }
 
@@ -601,6 +841,13 @@ function requireSheet(sheets: readonly WorksheetIndex[], name: string): Workshee
   return sheet;
 }
 
+function relationshipPartPath(sourcePath: string): string {
+  const separator = sourcePath.lastIndexOf('/');
+  const directory = separator < 0 ? '' : sourcePath.slice(0, separator);
+  const basename = sourcePath.slice(separator + 1);
+  return `${directory}/_rels/${basename}.rels`.replace(/^\//, '');
+}
+
 function columnNumber(letters: string): number {
   const normalized = letters.toUpperCase();
   if (!/^[A-Z]{1,3}$/.test(normalized)) {
@@ -630,6 +877,23 @@ function escapeXml(value: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&apos;');
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function containsForbiddenXmlCharacter(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint < 0x20 && codePoint !== 0x09 && codePoint !== 0x0a && codePoint !== 0x0d) {
+      return true;
+    }
+    if (codePoint >= 0xd800 && codePoint <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function decode(content: Uint8Array): string {
