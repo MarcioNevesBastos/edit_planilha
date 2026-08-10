@@ -43,6 +43,22 @@ function compareValues(left: CellValue, right: CellValue): number {
   return String(left).localeCompare(String(right));
 }
 
+export function compareDataRows(
+  left: DataRow,
+  right: DataRow,
+  sorts: Extract<TransformCommand, { type: 'sort' }>['sorts'],
+): number {
+  for (const sort of sorts) {
+    const leftValue = left.values[sort.columnId] ?? null;
+    const rightValue = right.values[sort.columnId] ?? null;
+    if (leftValue === null && rightValue !== null) return 1;
+    if (leftValue !== null && rightValue === null) return -1;
+    const comparison = compareValues(leftValue, rightValue);
+    if (comparison !== 0) return sort.direction === 'asc' ? comparison : -comparison;
+  }
+  return 0;
+}
+
 function matchesFilter(value: CellValue, operator: FilterOperator, expected?: CellValue): boolean {
   switch (operator) {
     case 'equals': return value === expected;
@@ -170,15 +186,7 @@ export function applyTransform(dataset: Dataset, command: TransformCommand): Dat
       return copyDataset(dataset, dataset.columns, dataset.rows
         .map((row, index) => ({ row, index }))
         .sort((left, right) => {
-          for (const sort of command.sorts) {
-            const leftValue = left.row.values[sort.columnId];
-            const rightValue = right.row.values[sort.columnId];
-            if (leftValue === null && rightValue !== null) return 1;
-            if (leftValue !== null && rightValue === null) return -1;
-            const comparison = compareValues(leftValue, rightValue);
-            if (comparison !== 0) return sort.direction === 'asc' ? comparison : -comparison;
-          }
-          return left.index - right.index;
+          return compareDataRows(left.row, right.row, command.sorts) || left.index - right.index;
         })
         .map(({ row }) => row));
     }

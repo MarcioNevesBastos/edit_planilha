@@ -12,6 +12,18 @@ export function shiftFormulaA1(
     .join('');
 }
 
+export function insertRowsInFormulaA1(
+  formula: string,
+  insertionRow: number,
+  rowCount: number,
+): string {
+  return tokenizeFormula(formula)
+    .map((token) => token.literal
+      ? token.value
+      : insertRowsInReferences(token.value, insertionRow, rowCount))
+    .join('');
+}
+
 interface FormulaToken {
   literal: boolean;
   value: string;
@@ -119,6 +131,44 @@ function shiftReferences(segment: string, rowDelta: number, colDelta: number): s
         - rowText.length;
       const qualifier = reference.slice(0, qualifierLength);
       return `${qualifier}${absoluteColumn}${columnName(shiftedColumn)}${absoluteRow}${shiftedRow}`;
+    },
+  );
+}
+
+function insertRowsInReferences(
+  segment: string,
+  insertionRow: number,
+  rowCount: number,
+): string {
+  return segment.replace(
+    CELL_REFERENCE,
+    (
+      reference,
+      absoluteColumn: string,
+      columnLetters: string,
+      absoluteRow: string,
+      rowText: string,
+      offset: number,
+      input: string,
+    ) => {
+      const row = Number(rowText);
+      if (columnNumber(columnLetters) > MAX_COLUMN || row > MAX_ROW) {
+        return reference;
+      }
+      const isRangeEnd = /:\s*$/.test(input.slice(0, offset));
+      const shiftedRow = row > insertionRow || (row === insertionRow && isRangeEnd)
+        ? row + rowCount
+        : row;
+      if (shiftedRow > MAX_ROW) {
+        return '#REF!';
+      }
+      const qualifierLength = reference.length
+        - absoluteColumn.length
+        - columnLetters.length
+        - absoluteRow.length
+        - rowText.length;
+      const qualifier = reference.slice(0, qualifierLength);
+      return `${qualifier}${absoluteColumn}${columnLetters}${absoluteRow}${shiftedRow}`;
     },
   );
 }

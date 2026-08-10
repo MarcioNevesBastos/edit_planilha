@@ -15,11 +15,18 @@ import type { WriteMode, WritePlan } from '../domain/merge/types';
 import type { TransformCommand } from '../domain/transforms/types';
 import { validateDataset, validateRow } from '../domain/validation/validate-row';
 import type { ValidationIssue, ValidationResult, ValidationRule } from '../domain/validation/types';
-import { detectDestination, type DestinationCandidate } from '../io/template/destination-detector';
-import type { ExportDestination } from '../io/template/export-workbook';
-import { openOoxmlPackage } from '../io/template/ooxml-package';
-import { indexWorkbook, type WorkbookIndex } from '../io/template/workbook-index';
-import { listSourceSheets } from '../io/source/read-source';
+import {
+  destinationDetectionWarnings,
+  detectDestination,
+  type DestinationCandidate,
+} from '../io/template/destination-detector';
+import {
+  exportRiskIdentifier,
+  type ExportDestination,
+  type ExportRisk,
+} from '../io/template/export-workbook';
+import type { RejectedSheetRow } from '../io/template/rejected-sheet';
+import type { WorkbookIndex } from '../io/template/workbook-index';
 import {
   transferablesForRequest,
   type WorkerInboundMessage,
@@ -134,60 +141,6 @@ function extension(name: string): string {
   return name.split('.').pop()?.toLowerCase() ?? '';
 }
 
-function columnType(values: unknown[]): DatasetColumn['detectedType'] {
-  const types = new Set(values.flatMap((value) => {
-    if (value === null || value === undefined || value === '') return [];
-    if (typeof value === 'number') return ['number' as const];
-    if (typeof value === 'boolean') return ['boolean' as const];
-    return ['string' as const];
-  }));
-  return types.size === 0 ? 'empty' : types.size === 1 ? [...types][0] : 'mixed';
-}
-
-function destinationDataset(
-  buffer: ArrayBuffer,
-  sheetName: string,
-  rangeReference: string,
-): Dataset {
-  const workbook = XLSX.read(buffer, { type: 'array', cellDates: false, cellText: true });
-  const worksheet = workbook.Sheets[sheetName];
-  if (!worksheet) throw new Error(`Aba do modelo não encontrada: ${sheetName}`);
-  const range = XLSX.utils.decode_range(rangeReference.replace(/\$/g, ''));
-  const headers = Array.from({ length: range.e.c - range.s.c + 1 }, (_, offset) => {
-    const cell = worksheet[XLSX.utils.encode_cell({ r: range.s.r, c: range.s.c + offset })];
-    return cell?.w ?? String(cell?.v ?? `Coluna ${XLSX.utils.encode_col(range.s.c + offset)}`);
-  });
-  const rawRows = Array.from({ length: Math.max(0, range.e.r - range.s.r) }, (_, rowOffset) => {
-    const worksheetRow = range.s.r + rowOffset + 1;
-    return Array.from({ length: headers.length }, (_, columnOffset) => {
-      const cell = worksheet[XLSX.utils.encode_cell({ r: worksheetRow, c: range.s.c + columnOffset })];
-      if (!cell || cell.v === undefined || cell.v === null) return null;
-      if (cell.t === 'n') return cell.v as number;
-      if (cell.t === 'b') return Boolean(cell.v);
-      return cell.w ?? String(cell.v);
-    });
-  });
-  const columns = headers.map((header, index) => ({
-    id: makeColumnId(header, index),
-    header,
-    sourceIndex: range.s.c + index,
-    detectedType: columnType(rawRows.map((row) => row[index])),
-  }));
-  const rows = rawRows
-    .map((values, index) => ({ values, sourceRowNumber: range.s.r + index + 2 }))
-    .filter(({ values }) => values.some((value) => value !== null && value !== ''))
-    .map(({ values, sourceRowNumber }) => {
-      const record = Object.fromEntries(columns.map((column, index) => [column.id, values[index]]));
-      return {
-        rowId: `template-${sourceRowNumber}`,
-        sourceRowNumber,
-        values: record,
-        originalValues: { ...record },
-      };
-    });
-  return { columns, rows };
-}
-
 function rangeRows(reference: string): { headerRow: number; dataStartRow: number; templateRow: number } {
   const range = XLSX.utils.decode_range(reference.replace(/\$/g, ''));
   return {
@@ -270,6 +223,76 @@ function fixedMappingCommands(
     : []);
 }
 
+function effectiveIncomingDataset(
+  dataset: Dataset,
+  mappings: readonly ReviewedMapping[],
+): Dataset {
+  return fixedMappingCommands(mappings).reduce((current, command) => ({
+    ...current,
+    rows: current.rows.map((row) => ({
+      ...row,
+      values: { ...row.values, [command.columnId]: command.value },
+    })),
+  }), dataset);
+}
+
+export function buildRejectedRows(
+  dataset: Dataset,
+  validation: ValidationResult,
+  plan: WritePlan,
+): RejectedSheetRow[] {
+  const rowsById = new Map(dataset.rows.map((row) => [row.rowId, row]));
+  const columnsById = new Map(dataset.columns.map((column) => [column.id, column]));
+  const validationRows = validation.issues.map((issue): RejectedSheetRow => {
+    const row = rowsById.get(issue.rowId);
+    return {
+      sourceRowNumber: issue.sourceRowNumber,
+      originalRelevantFields: row?.originalValues ?? {},
+      errorField: columnsById.get(issue.columnId)?.header ?? issue.columnId,
+      invalidValue: issue.value,
+      rejectionReason: issue.message,
+      failedRuleOrTransform: issue.code,
+    };
+  });
+  const reason = {
+    'incoming-duplicate-key': 'Chave duplicada nos dados de origem.',
+    'existing-duplicate-key': 'Chave duplicada no destino existente.',
+    'missing-update-key': 'Chave de atualização ausente.',
+  } as const;
+  const planRows = plan.rejected.map((rejection): RejectedSheetRow => {
+    const row = rowsById.get(rejection.incomingRowId);
+    return {
+      sourceRowNumber: row?.sourceRowNumber ?? 0,
+      originalRelevantFields: row?.originalValues ?? {},
+      errorField: rejection.keyColumnIds
+        .map((id) => columnsById.get(id)?.header ?? id)
+        .join(' + '),
+      invalidValue: JSON.stringify(rejection.keyValues),
+      rejectionReason: reason[rejection.reason],
+      failedRuleOrTransform: rejection.reason,
+    };
+  });
+  return [...validationRows, ...planRows];
+}
+
+function writePlanFingerprint(
+  mode: WriteMode,
+  keys: readonly string[],
+  mappings: readonly ReviewedMapping[],
+  validation: ValidationResult | null,
+  datasetRevision: number,
+): string {
+  return JSON.stringify({
+    mode,
+    keys,
+    mappings: mappings.map(({ sourceColumnId, destinationColumnId, status, action, fixedValue }) => ({
+      sourceColumnId, destinationColumnId, status, action, fixedValue,
+    })),
+    validation,
+    datasetRevision,
+  });
+}
+
 function mapExistingForPlanning(
   existing: Dataset,
   source: Dataset,
@@ -324,12 +347,18 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   const [sourceSheets, setSourceSheets] = useState<string[]>([]);
   const [templateIndex, setTemplateIndex] = useState<WorkbookIndex | null>(null);
   const [destinationCandidates, setDestinationCandidates] = useState<DestinationCandidate[]>([]);
+  const [destinationWarnings, setDestinationWarnings] = useState<string[]>([]);
   const [selectedDestination, setSelectedDestination] = useState<DestinationCandidate | null>(null);
   const [templateDataset, setTemplateDataset] = useState<Dataset | null>(null);
   const [writeMode, setWriteMode] = useState<WriteMode>('replace');
   const [keyColumnIds, setKeyColumnIds] = useState<string[]>([]);
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
   const [writePlan, setWritePlan] = useState<WritePlan | null>(null);
+  const [writePlanFingerprintValue, setWritePlanFingerprintValue] = useState<string | null>(null);
+  const [datasetRevision, setDatasetRevision] = useState(0);
+  const [exportRisks, setExportRisks] = useState<ExportRisk[] | null>(null);
+  const [riskFingerprint, setRiskFingerprint] = useState<string | null>(null);
+  const [reviewedRiskIds, setReviewedRiskIds] = useState<string[]>([]);
   const [focusTarget, setFocusTarget] = useState<{ rowId: string; columnId: string } | null>(null);
   const [activeOperation, setActiveOperation] = useState<ActiveOperation | null>(null);
   const [preflightBusy, setPreflightBusy] = useState(false);
@@ -345,6 +374,19 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   const mappings = session.mappings as ReviewedMapping[];
   const commands = session.transforms as TransformCommand[];
   const userRules = session.validationRules as ValidationRule[];
+  const effectiveDataset = useMemo(
+    () => session.dataset ? effectiveIncomingDataset(session.dataset, mappings) : null,
+    [mappings, session.dataset],
+  );
+  const currentPlanFingerprint = useMemo(() => writePlanFingerprint(
+    writeMode,
+    keyColumnIds,
+    mappings,
+    validationResult,
+    datasetRevision,
+  ), [datasetRevision, keyColumnIds, mappings, validationResult, writeMode]);
+  const currentWritePlan = writePlanFingerprintValue === currentPlanFingerprint ? writePlan : null;
+  const currentExportRisks = riskFingerprint === currentPlanFingerprint ? exportRisks : null;
   const duplicateMappings = useMemo(() => duplicateDestinationIds(mappings), [mappings]);
   const acceptedMappedColumns = useMemo(() => acceptedMappedSourceIds(mappings), [mappings]);
   const availableKeyColumns = useMemo(
@@ -460,6 +502,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
             ? reconcileMappings(result.dataset.columns, templateDataset.columns, mappings)
             : [];
           setBaseDataset(result.dataset);
+          setDatasetRevision((current) => current + 1);
           setPendingSourceFile(null);
           setSourceSheets([]);
           store.setState({
@@ -488,17 +531,27 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
       return;
     }
     try {
-      const sheets = await listSourceSheets(file);
+      const buffer = await file.arrayBuffer();
       if (preflightRef.current !== preflightId) return;
-      setPendingSourceFile(file);
-      setSourceSheets(sheets);
-      if (sheets.length === 1) await importSourceFile(file, sheets[0], preflightId);
+      finishPreflight(preflightId);
+      runOperation({
+        type: 'LIST_SOURCE_SHEETS',
+        operationId: operationId('source-sheets'),
+        source: { name: file.name, buffer, mediaType: file.type },
+      }, 'Lendo abas da origem', {
+        onResult: (result) => {
+          if (result.type !== 'LIST_SOURCE_SHEETS') return;
+          setPendingSourceFile(file);
+          setSourceSheets(result.sheetNames);
+          if (result.sheetNames.length === 1) void importSourceFile(file, result.sheetNames[0]);
+        },
+      });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       finishPreflight(preflightId);
     }
-  }, [beginPreflight, finishPreflight, importSourceFile]);
+  }, [beginPreflight, finishPreflight, importSourceFile, operationId, runOperation]);
 
   const selectTemplateFile = useCallback(async (file: File) => {
     if (extension(file.name) !== 'xlsx') {
@@ -510,33 +563,44 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
     try {
       setError(null);
       const buffer = await file.arrayBuffer();
-      const index = await indexWorkbook(await openOoxmlPackage(buffer.slice(0)));
       if (preflightRef.current !== preflightId) return;
-      setTemplateIndex(index);
-      setDestinationCandidates([]);
-      setSelectedDestination(null);
-      setTemplateDataset(null);
-      setValidationResult(null);
-      setWritePlan(null);
-      setExported(false);
-      setKeyColumnIds([]);
-      store.setState({
-        templateMetadata: metadata(file),
-        templateFileBuffer: buffer,
-        selectedSheets: { ...store.getState().selectedSheets, template: null },
-        mappings: [],
-        validationRules: [],
+      finishPreflight(preflightId);
+      runOperation({
+        type: 'INDEX_TEMPLATE',
+        operationId: operationId('template-index'),
+        templateBuffer: buffer.slice(0),
+      }, 'Indexando modelo', {
+        onResult: (result) => {
+          if (result.type !== 'INDEX_TEMPLATE') return;
+          setTemplateIndex(result.index);
+          setDestinationCandidates([]);
+          setDestinationWarnings([]);
+          setSelectedDestination(null);
+          setTemplateDataset(null);
+          setValidationResult(null);
+          setWritePlan(null);
+          setExported(false);
+          setKeyColumnIds([]);
+          store.setState({
+            templateMetadata: metadata(file),
+            templateFileBuffer: buffer,
+            selectedSheets: { ...store.getState().selectedSheets, template: null },
+            mappings: [],
+            validationRules: [],
+          });
+        },
       });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       finishPreflight(preflightId);
     }
-  }, [beginPreflight, finishPreflight, store]);
+  }, [beginPreflight, finishPreflight, operationId, runOperation, store]);
 
   const selectTemplateSheet = useCallback((sheetName: string) => {
     if (!templateIndex) return;
     setDestinationCandidates(detectDestination(templateIndex, sheetName));
+    setDestinationWarnings(destinationDetectionWarnings(templateIndex, sheetName));
     setSelectedDestination(null);
     setTemplateDataset(null);
     setValidationResult(null);
@@ -552,27 +616,29 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
 
   const selectDestination = useCallback((candidate: DestinationCandidate) => {
     if (!session.templateFileBuffer || !session.dataset) return;
-    try {
-      const modelDataset = destinationDataset(
-        session.templateFileBuffer,
-        candidate.sheetName,
-        candidate.range,
-      );
-      const suggestions: ReviewedMapping[] = suggestMappings(
-        session.dataset.columns,
-        modelDataset.columns,
-      ).map((mapping) => ({ ...mapping, action: 'map' }));
-      setSelectedDestination(candidate);
-      setTemplateDataset(modelDataset);
-      setValidationResult(null);
-      setWritePlan(null);
-      setExported(false);
-      setKeyColumnIds([]);
-      store.setState({ mappings: suggestions, validationRules: [] });
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    }
-  }, [session.dataset, session.templateFileBuffer, store]);
+    runOperation({
+      type: 'EXTRACT_DESTINATION',
+      operationId: operationId('destination'),
+      templateBuffer: session.templateFileBuffer.slice(0),
+      sheetName: candidate.sheetName,
+      range: candidate.range,
+    }, 'Lendo destino', {
+      onResult: (result) => {
+        if (result.type !== 'EXTRACT_DESTINATION' || !session.dataset) return;
+        const suggestions: ReviewedMapping[] = suggestMappings(
+          session.dataset.columns,
+          result.dataset.columns,
+        ).map((mapping) => ({ ...mapping, action: 'map' }));
+        setSelectedDestination(candidate);
+        setTemplateDataset(result.dataset);
+        setValidationResult(null);
+        setWritePlan(null);
+        setExported(false);
+        setKeyColumnIds([]);
+        store.setState({ mappings: suggestions, validationRules: [] });
+      },
+    });
+  }, [operationId, runOperation, session.dataset, session.templateFileBuffer, store]);
 
   const commitCommandSet = useCallback((
     nextCommands: TransformCommand[],
@@ -598,11 +664,12 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
             ? { mappings: reconcileMappings(result.dataset.columns, templateDataset.columns, mappings) }
             : {}),
         });
+        setDatasetRevision((current) => current + 1);
         setValidationResult(null);
         setWritePlan(null);
         if (schemaChanged) setKeyColumnIds([]);
         setExported(false);
-        after?.(result.dataset);
+        after?.(effectiveIncomingDataset(result.dataset, mappings));
       },
     });
   }, [baseDataset, mappings, operationId, runOperation, store, templateDataset]);
@@ -665,12 +732,12 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   }, [commands, commitCommandSet, revalidateCorrection]);
 
   const runValidation = useCallback(() => {
-    if (!session.dataset) return;
+    if (!effectiveDataset) return;
     const id = operationId('validation');
     runOperation({
       type: 'VALIDATE',
       operationId: id,
-      dataset: session.dataset,
+      dataset: effectiveDataset,
       rules: [...detectedRules, ...userRules],
     }, 'Validando dados', {
       onResult: (result) => {
@@ -680,26 +747,14 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         setExported(false);
       },
     });
-  }, [detectedRules, operationId, runOperation, session.dataset, userRules]);
+  }, [detectedRules, effectiveDataset, operationId, runOperation, userRules]);
 
   const runWritePlan = useCallback(() => {
-    if (!session.dataset || !templateDataset || !selectedDestination) return;
-    const fixedCommands = fixedMappingCommands(mappings);
-    const incoming = fixedCommands.length === 0
-      ? session.dataset
-      : fixedCommands.reduce((dataset, command) => {
-        const column = dataset.columns.find(({ id }) => id === command.columnId);
-        if (!column) return dataset;
-        return {
-          ...dataset,
-          rows: dataset.rows.map((row) => ({
-            ...row,
-            values: { ...row.values, [command.columnId]: command.type === 'fixedValue' ? command.value : row.values[command.columnId] },
-          })),
-        };
-      }, session.dataset);
+    if (!effectiveDataset || !templateDataset || !selectedDestination) return;
+    const incoming = effectiveDataset;
     const rows = rangeRows(selectedDestination.range);
     const id = operationId('plan');
+    const fingerprint = currentPlanFingerprint;
     runOperation({
       type: 'PLAN_WRITE',
       operationId: id,
@@ -708,40 +763,68 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         incoming,
         existing: mapExistingForPlanning(templateDataset, incoming, mappings),
         destination: { headerRow: rows.headerRow, dataStartRow: rows.dataStartRow },
+        comparedColumnIds: [...acceptedMappedColumns],
         ...(writeMode === 'update' ? { keyColumnIds: keyColumnIds.filter((id) => acceptedMappedColumns.has(id)) } : {}),
       },
     }, 'Calculando resumo', {
       onResult: (result) => {
         if (result.type !== 'PLAN_WRITE') return;
         setWritePlan(result.writePlan);
+        setWritePlanFingerprintValue(fingerprint);
+        setExportRisks(null);
+        setRiskFingerprint(null);
+        setReviewedRiskIds([]);
         setExported(false);
         setStepIndex(8);
         setHighestVisited((current) => Math.max(current, 8));
       },
     });
-  }, [acceptedMappedColumns, keyColumnIds, mappings, operationId, runOperation, selectedDestination, session.dataset, templateDataset, writeMode]);
+  }, [acceptedMappedColumns, currentPlanFingerprint, effectiveDataset, keyColumnIds, mappings, operationId, runOperation, selectedDestination, templateDataset, writeMode]);
+
+  const exportInput = useCallback((plan: WritePlan, riskIds: readonly string[] = []) => {
+    if (!validationResult || !selectedDestination || !templateDataset || !templateIndex || !session.dataset) return null;
+    return {
+      destination: destinationForExport(selectedDestination, templateDataset, templateIndex),
+      mappings: acceptedMappings(mappings),
+      writePlan: plan,
+      validationResult,
+      rejectedRows: buildRejectedRows(session.dataset, validationResult, plan),
+      reviewedRiskIds: riskIds,
+    };
+  }, [mappings, selectedDestination, session.dataset, templateDataset, templateIndex, validationResult]);
+
+  const runExportRiskScan = useCallback(() => {
+    if (!currentWritePlan || !session.templateFileBuffer) return;
+    const input = exportInput(currentWritePlan);
+    if (!input) return;
+    const fingerprint = currentPlanFingerprint;
+    runOperation({
+      type: 'SCAN_EXPORT_RISKS',
+      operationId: operationId('export-risks'),
+      templateBuffer: session.templateFileBuffer.slice(0),
+      input,
+    }, 'Verificando riscos', {
+      onResult: (result) => {
+        if (result.type !== 'EXPORT_RISKS') return;
+        setExportRisks(result.risks);
+        setRiskFingerprint(fingerprint);
+        setReviewedRiskIds([]);
+        setStepIndex(9);
+        setHighestVisited((current) => Math.max(current, 9));
+      },
+    });
+  }, [currentPlanFingerprint, currentWritePlan, exportInput, operationId, runOperation, session.templateFileBuffer]);
 
   const exportWorkbook = useCallback(() => {
-    if (!writePlan || !validationResult || !selectedDestination || !templateDataset || !templateIndex || !session.templateFileBuffer) return;
+    if (!currentWritePlan || !session.templateFileBuffer) return;
+    const input = exportInput(currentWritePlan, reviewedRiskIds);
+    if (!input) return;
     const id = operationId('export');
     runOperation({
       type: 'EXPORT',
       operationId: id,
       templateBuffer: session.templateFileBuffer.slice(0),
-      input: {
-        destination: destinationForExport(selectedDestination, templateDataset, templateIndex),
-        mappings: acceptedMappings(mappings),
-        writePlan,
-        validationResult,
-        rejectedRows: validationResult.issues.map((issue) => ({
-          sourceRowNumber: issue.sourceRowNumber,
-          originalRelevantFields: session.dataset?.rows.find(({ rowId }) => rowId === issue.rowId)?.originalValues ?? {},
-          errorField: session.dataset?.columns.find(({ id: columnId }) => columnId === issue.columnId)?.header ?? issue.columnId,
-          invalidValue: issue.value,
-          rejectionReason: issue.message,
-          failedRuleOrTransform: issue.code,
-        })),
-      },
+      input,
     }, 'Exportando planilha', {
       onResult: (result) => {
         if (result.type !== 'EXPORT') return;
@@ -757,7 +840,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         setExported(true);
       },
     });
-  }, [mappings, operationId, runOperation, selectedDestination, session.dataset, session.templateFileBuffer, templateDataset, templateIndex, validationResult, writePlan]);
+  }, [currentWritePlan, exportInput, operationId, reviewedRiskIds, runOperation, session.templateFileBuffer]);
 
   const canAdvance = useMemo(() => {
     switch (stepIndex) {
@@ -772,15 +855,19 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
       case 6: return true;
       case 7: return writeMode !== 'update'
         || (keyColumnIds.length > 0 && keyColumnIds.every((id) => acceptedMappedColumns.has(id)));
-      case 8: return writePlan !== null;
+      case 8: return currentWritePlan !== null;
       default: return false;
     }
-  }, [acceptedMappedColumns, duplicateMappings.size, keyColumnIds, mappings, selectedDestination, session.dataset, session.selectedSheets.template, session.templateFileBuffer, stepIndex, validationResult, writeMode, writePlan]);
+  }, [acceptedMappedColumns, currentWritePlan, duplicateMappings.size, keyColumnIds, mappings, selectedDestination, session.dataset, session.selectedSheets.template, session.templateFileBuffer, stepIndex, validationResult, writeMode]);
 
   const advance = () => {
     if (!canAdvance || activeOperation) return;
     if (stepIndex === 7) {
       runWritePlan();
+      return;
+    }
+    if (stepIndex === 8) {
+      runExportRiskScan();
       return;
     }
     const next = Math.min(STEPS.length - 1, stepIndex + 1);
@@ -818,10 +905,16 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
             setSourceSheets([]);
             setTemplateIndex(null);
             setDestinationCandidates([]);
+            setDestinationWarnings([]);
             setSelectedDestination(null);
             setTemplateDataset(null);
             setValidationResult(null);
             setWritePlan(null);
+            setWritePlanFingerprintValue(null);
+            setDatasetRevision(0);
+            setExportRisks(null);
+            setRiskFingerprint(null);
+            setReviewedRiskIds([]);
             setExported(false);
             commandHistory.current = { past: [], future: [] };
           }}
@@ -923,7 +1016,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
                     onChange={() => selectDestination(candidate)}
                   />
                   <span>
-                    <strong>{candidate.kind === 'table' ? candidate.tableName : candidate.kind === 'named-range' ? candidate.definedName : `Região ${index + 1}`}</strong>
+                    <strong>{candidate.kind === 'table' ? candidate.tableName : candidate.kind === 'named-range' ? candidate.definedName.name : `Região ${index + 1}`}</strong>
                     <small>{candidate.sheetName} · {candidate.range}</small>
                     <small>{candidate.explanation}</small>
                   </span>
@@ -931,6 +1024,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
                 </label>
               ))}
               {destinationCandidates.length === 0 ? <p>Nenhum destino detectado na aba selecionada.</p> : null}
+              {destinationWarnings.map((warning) => <p className="error-banner" key={warning}>{warning}</p>)}
             </div>
           ) : null}
 
@@ -1032,9 +1126,16 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
                       <input
                         type="checkbox"
                         checked={keyColumnIds.includes(column.id)}
-                        onChange={(event) => setKeyColumnIds((current) => event.currentTarget.checked
-                          ? [...current, column.id]
-                          : current.filter((id) => id !== column.id))}
+                        onChange={(event) => {
+                          const checked = event.currentTarget.checked;
+                          setKeyColumnIds((current) => checked
+                            ? [...current, column.id]
+                            : current.filter((id) => id !== column.id));
+                          setWritePlan(null);
+                          setWritePlanFingerprintValue(null);
+                          setExportRisks(null);
+                          setRiskFingerprint(null);
+                        }}
                       />
                       {column.header}
                     </label>
@@ -1044,9 +1145,9 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
             </div>
           ) : null}
 
-          {stepIndex === 8 && writePlan ? (
+          {stepIndex === 8 && currentWritePlan ? (
             <>
-              <ExportSummary plan={writePlan} validationIssues={validationResult?.issues ?? []} />
+              <ExportSummary plan={currentWritePlan} validationIssues={validationResult?.issues ?? []} />
               <p className="summary-note">Modo selecionado: <strong>{writeMode === 'replace' ? 'Substituir' : writeMode === 'append' ? 'Acrescentar' : 'Atualizar'}</strong></p>
             </>
           ) : null}
@@ -1056,10 +1157,46 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
               <div className="export-icon" aria-hidden="true">XLSX</div>
               <h3>{exported ? 'Arquivo exportado' : 'Tudo pronto para exportar'}</h3>
               <p>O processamento acontece no navegador e o modelo original não será alterado.</p>
+              {currentExportRisks ? (
+                <section className="risk-list" aria-label="Riscos de exportação">
+                  {currentExportRisks.length === 0 ? <p>Nenhum risco de compatibilidade detectado.</p> : null}
+                  {currentExportRisks.map((risk) => {
+                    const riskId = exportRiskIdentifier(risk);
+                    return (
+                      <div key={riskId} className={risk.severity === 'hard' ? 'error-banner' : 'selection-note'}>
+                        <strong>{risk.severity === 'hard' ? 'Bloqueio' : 'Confirmação necessária'}</strong>
+                        <p>{risk.message}</p>
+                        {risk.severity === 'soft' ? (
+                          <label>
+                            <input
+                              type="checkbox"
+                              aria-label={`Confirmar risco ${risk.code}`}
+                              checked={reviewedRiskIds.includes(riskId)}
+                              onChange={(event) => {
+                                const checked = event.currentTarget.checked;
+                                setReviewedRiskIds((current) => checked
+                                  ? [...current, riskId]
+                                  : current.filter((id) => id !== riskId));
+                              }}
+                            />
+                            Confirmo este risco
+                          </label>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </section>
+              ) : null}
               <button
                 type="button"
                 className="primary-button export-button"
-                disabled={workflowBusy || !writePlan || !validationResult}
+                disabled={workflowBusy
+                  || !currentWritePlan
+                  || !validationResult
+                  || currentExportRisks === null
+                  || currentExportRisks.some((risk) => risk.severity === 'hard')
+                  || currentExportRisks.some((risk) => risk.severity === 'soft'
+                    && !reviewedRiskIds.includes(exportRiskIdentifier(risk)))}
                 onClick={exportWorkbook}
               >
                 Exportar .xlsx

@@ -1,4 +1,4 @@
-import { shiftFormulaA1 } from './formula-shift';
+import { insertRowsInFormulaA1, shiftFormulaA1 } from './formula-shift';
 import type { OoxmlPackage } from './ooxml-package';
 
 export interface DestinationExpansionPlan {
@@ -43,6 +43,7 @@ export async function expandDestination(
 
   const targetLastRow = destination.endRow + additionalRows;
   const worksheet = decode(pkg.readPart(plan.worksheetPath));
+  assertSupportedRowGeometry(worksheet, plan.worksheetPath);
   if (options && (!Number.isSafeInteger(options.batchSize) || options.batchSize < 1)) {
     throw new RangeError('batchSize must be a positive whole number');
   }
@@ -62,10 +63,20 @@ export async function expandDestination(
         plan.destinationRange,
       )
     : null;
+  const expandedDrawings = expandDrawingAnchors(
+    pkg,
+    plan.worksheetPath,
+    worksheet,
+    destination.endRow,
+    additionalRows,
+  );
 
   pkg.updatePart(plan.worksheetPath, expandedWorksheet);
   if (plan.tablePath && expandedTable) {
     pkg.updatePart(plan.tablePath, expandedTable);
+  }
+  for (const [path, drawing] of expandedDrawings) {
+    pkg.updatePart(path, drawing);
   }
 }
 
@@ -126,7 +137,7 @@ async function expandWorksheet(
     }
     const prefix = inserted ? '' : clones;
     inserted = true;
-    return prefix + shiftRow(row, additionalRows, true);
+    return prefix + moveRowAtInsertion(row, additionalRows, destination.endRow);
   }) + (inserted ? '' : clones);
 
   let result = worksheet.replace(
@@ -145,7 +156,43 @@ async function expandWorksheet(
     targetLastRow,
     additionalRows,
   );
+  result = updateReferenceAttributes(
+    result,
+    'mergeCell',
+    (range) => updateRangeAtInsertion(range, destination, targetLastRow, additionalRows),
+  );
+  result = updateReferenceAttributes(
+    result,
+    'hyperlink',
+    (range) => updateHyperlinkRangeAtInsertion(range, destination.endRow, additionalRows),
+  );
+  result = updateSqrefAttributes(
+    result,
+    ['conditionalFormatting', 'ignoredError', 'protectedRange'],
+    destination,
+    targetLastRow,
+    additionalRows,
+  );
+  result = updateTopLeftCells(result, destination.endRow, additionalRows);
   return result;
+}
+
+function updateHyperlinkRangeAtInsertion(
+  range: CellRange,
+  insertionRow: number,
+  additionalRows: number,
+): CellRange {
+  if (range.startRow === range.endRow) {
+    return range.startRow > insertionRow
+      ? { ...range, startRow: range.startRow + additionalRows, endRow: range.endRow + additionalRows }
+      : range;
+  }
+  return expandRowsAtInsertion(
+    range,
+    insertionRow,
+    insertionRow + additionalRows,
+    additionalRows,
+  );
 }
 
 async function buildRowClones(
@@ -213,6 +260,14 @@ function shiftRow(row: string, rowDelta: number, shiftFormulas: boolean): string
   return shifted;
 }
 
+function moveRowAtInsertion(row: string, rowDelta: number, insertionRow: number): string {
+  let shifted = shiftRow(row, rowDelta, false);
+  shifted = shifted.replace(/(<f\b[^>]*>)([\s\S]*?)(<\/f>)/g, (_, open, formula, close) => (
+    `${open}${insertRowsInFormulaA1(formula, insertionRow, rowDelta)}${close}`
+  ));
+  return shifted;
+}
+
 function updateDimension(
   worksheet: string,
   insertionRow: number,
@@ -249,6 +304,36 @@ function updateValidationRanges(
       ));
     });
     return `${start}${ranges.join(' ')}${end}`;
+  });
+}
+
+function updateSqrefAttributes(
+  worksheet: string,
+  tagNames: readonly string[],
+  destination: CellRange,
+  targetLastRow: number,
+  additionalRows: number,
+): string {
+  const names = tagNames.join('|');
+  const pattern = new RegExp(`(<(?:${names})\\b[^>]*\\bsqref=")([^"]+)(")`, 'g');
+  return worksheet.replace(pattern, (_, start, sqref, end) => {
+    const updated = String(sqref).trim().split(/\s+/).map((value) => formatRange(
+      updateRangeAtInsertion(parseRange(value), destination, targetLastRow, additionalRows),
+    ));
+    return `${start}${updated.join(' ')}${end}`;
+  });
+}
+
+function updateTopLeftCells(
+  worksheet: string,
+  insertionRow: number,
+  additionalRows: number,
+): string {
+  return worksheet.replace(/(\btopLeftCell=")([A-Z]+)(\d+)(")/gi, (
+    _, start, column, rowText, end,
+  ) => {
+    const row = Number(rowText);
+    return `${start}${column}${row > insertionRow ? row + additionalRows : row}${end}`;
   });
 }
 
@@ -352,6 +437,73 @@ function attribute(tag: string, name: string): string | null {
 
 function setAttribute(tag: string, name: string, value: string): string {
   return tag.replace(new RegExp(`(\\b${name}=")[^"]*(")`), `$1${value}$2`);
+}
+
+function assertSupportedRowGeometry(worksheet: string, worksheetPath: string): void {
+  if (/<(?:extLst|legacyDrawing|legacyDrawingHF|oleObjects|controls|picture)\b/i.test(worksheet)) {
+    throw new Error(`Unsupported row-bearing worksheet geometry in ${worksheetPath}`);
+  }
+}
+
+function expandDrawingAnchors(
+  pkg: OoxmlPackage,
+  worksheetPath: string,
+  worksheet: string,
+  insertionRow: number,
+  additionalRows: number,
+): Map<string, string> {
+  const relationshipIds = [...worksheet.matchAll(/<drawing\b[^>]*\br:id="([^"]+)"[^>]*\/?\s*>/g)]
+    .map((match) => match[1]);
+  if (relationshipIds.length === 0) return new Map();
+
+  const relationshipsPath = relationshipPartPath(worksheetPath);
+  if (!pkg.hasPart(relationshipsPath)) {
+    throw new Error(`Drawing relationships were not found for ${worksheetPath}`);
+  }
+  const relationships = decode(pkg.readPart(relationshipsPath));
+  const updates = new Map<string, string>();
+  for (const relationshipId of relationshipIds) {
+    const relationship = [...relationships.matchAll(/<Relationship\b[^>]*\/>/g)]
+      .map((match) => match[0])
+      .find((tag) => attribute(tag, 'Id') === relationshipId);
+    if (!relationship || !attribute(relationship, 'Type')?.endsWith('/drawing')) {
+      throw new Error(`Drawing relationship was not found: ${relationshipId}`);
+    }
+    const target = attribute(relationship, 'Target');
+    if (!target) throw new Error(`Drawing target was not found: ${relationshipId}`);
+    const drawingPath = resolveTarget(worksheetPath, target);
+    const drawing = decode(pkg.readPart(drawingPath));
+    if (/<xdr:extLst\b/i.test(drawing)) {
+      throw new Error(`Unsupported row-bearing drawing geometry in ${drawingPath}`);
+    }
+    updates.set(drawingPath, drawing.replace(
+      /(<xdr:row>)(\d+)(<\/xdr:row>)/g,
+      (_, open, rowText, close) => {
+        const row = Number(rowText);
+        return `${open}${row >= insertionRow ? row + additionalRows : row}${close}`;
+      },
+    ));
+  }
+  return updates;
+}
+
+function relationshipPartPath(sourcePath: string): string {
+  const separator = sourcePath.lastIndexOf('/');
+  const directory = separator < 0 ? '' : sourcePath.slice(0, separator);
+  const basename = sourcePath.slice(separator + 1);
+  return `${directory}/_rels/${basename}.rels`.replace(/^\//, '');
+}
+
+function resolveTarget(sourcePath: string, target: string): string {
+  const sourceDirectory = sourcePath.slice(0, Math.max(0, sourcePath.lastIndexOf('/')));
+  const segments = `${sourceDirectory}/${target}`.split('/');
+  const normalized: string[] = [];
+  for (const segment of segments) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') normalized.pop();
+    else normalized.push(segment);
+  }
+  return normalized.join('/');
 }
 
 function decode(content: Uint8Array): string {

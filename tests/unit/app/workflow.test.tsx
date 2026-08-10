@@ -6,7 +6,7 @@ import React from 'react';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { App, type WorkflowWorker } from '../../../src/app/App';
+import { App, buildRejectedRows, type WorkflowWorker } from '../../../src/app/App';
 import { DataGrid } from '../../../src/app/components/DataGrid';
 import { ExportSummary } from '../../../src/app/components/ExportSummary';
 import { MappingGrid, type ReviewedMapping } from '../../../src/app/components/MappingGrid';
@@ -19,6 +19,8 @@ import type {
   WorkerRequest,
   WorkerResponse,
 } from '../../../src/workers/protocol';
+import type { ExportRisk } from '../../../src/io/template/export-workbook';
+import type { WorkbookIndex } from '../../../src/io/template/workbook-index';
 
 const sourceDataset: Dataset = {
   columns: [
@@ -58,9 +60,39 @@ const templateDataset: Dataset = {
   ],
 };
 
+const templateIndex: WorkbookIndex = {
+  workbookPath: 'xl/workbook.xml',
+  workbookProtected: false,
+  relationships: [],
+  definedNames: [],
+  sheets: [{
+    name: 'Dados Modelo',
+    order: 0,
+    sheetId: '1',
+    state: 'visible',
+    relationshipId: 'rId1',
+    path: 'xl/worksheets/sheet1.xml',
+    usedRange: 'A1:D5',
+    autoFilterRange: 'A2:D5',
+    protected: false,
+    tables: [{
+      id: 1,
+      name: 'TabelaDestino',
+      displayName: 'TabelaDestino',
+      range: 'A2:D5',
+      autoFilterRange: 'A2:D5',
+      relationshipId: 'rId2',
+      path: 'xl/tables/table1.xml',
+    }],
+    detectedRegions: [],
+  }],
+};
+
 class FakeWorker implements WorkflowWorker {
   public onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null = null;
   public readonly requests: WorkerRequest[] = [];
+
+  public constructor(private readonly exportRisks: ExportRisk[] = []) {}
 
   public postMessage(message: WorkerInboundMessage): void {
     if (message.type === 'CANCEL_OPERATION') {
@@ -86,6 +118,12 @@ class FakeWorker implements WorkflowWorker {
             type: 'IMPORT_SOURCE' as const,
             dataset: message.operationId.startsWith('template') ? templateDataset : sourceDataset,
           };
+        case 'LIST_SOURCE_SHEETS':
+          return { type: 'LIST_SOURCE_SHEETS' as const, sheetNames: ['Dados'] };
+        case 'INDEX_TEMPLATE':
+          return { type: 'INDEX_TEMPLATE' as const, index: templateIndex };
+        case 'EXTRACT_DESTINATION':
+          return { type: 'EXTRACT_DESTINATION' as const, dataset: templateDataset };
         case 'APPLY_TRANSFORMS':
           return {
             type: 'APPLY_TRANSFORMS' as const,
@@ -98,6 +136,8 @@ class FakeWorker implements WorkflowWorker {
           };
         case 'PLAN_WRITE':
           return { type: 'PLAN_WRITE' as const, writePlan: planWrite(message.input) };
+        case 'SCAN_EXPORT_RISKS':
+          return { type: 'EXPORT_RISKS' as const, risks: this.exportRisks };
         case 'EXPORT':
           return { type: 'EXPORT' as const, buffer: new ArrayBuffer(16) };
       }
@@ -155,6 +195,36 @@ async function chooseTemplate(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByText('Dados Modelo selecionada');
 }
 
+async function chooseDestination(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: 'Avançar' }));
+  await user.click(screen.getByLabelText(/TabelaDestino/));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Avançar' })).toBeEnabled());
+  await user.click(screen.getByRole('button', { name: 'Avançar' }));
+}
+
+async function prepareSummary(
+  user: ReturnType<typeof userEvent.setup>,
+  mode: 'replace' | 'update' = 'replace',
+) {
+  await importSource(user);
+  await chooseTemplate(user);
+  await chooseDestination(user);
+  await user.click(screen.getByRole('button', { name: 'Aceitar ID' }));
+  await user.click(screen.getByRole('button', { name: 'Ignorar Nome' }));
+  await user.click(screen.getByRole('button', { name: 'Avançar' }));
+  await user.click(screen.getByRole('button', { name: 'Avançar' }));
+  await user.click(screen.getByRole('button', { name: 'Executar validação' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Avançar' })).toBeEnabled());
+  await user.click(screen.getByRole('button', { name: 'Avançar' }));
+  await user.click(screen.getByRole('button', { name: 'Avançar' }));
+  if (mode === 'update') {
+    await user.click(screen.getByRole('radio', { name: /Atualizar/ }));
+    await user.click(screen.getByRole('checkbox', { name: 'ID' }));
+  }
+  await user.click(screen.getByRole('button', { name: 'Avançar' }));
+  await screen.findByText('Inseridos');
+}
+
 describe('workflow navigation', () => {
   it('guards required steps and preserves imported files when navigating back', async () => {
     const user = userEvent.setup();
@@ -200,7 +270,7 @@ describe('workflow navigation', () => {
     await user.click(screen.getByRole('button', { name: 'Avançar' }));
     await user.click(screen.getByRole('button', { name: 'Avançar' }));
     expect(screen.getByRole('table', { name: 'Revisão de mapeamentos' })).toBeInTheDocument();
-    expect(screen.getByText('Revisão necessária')).toBeInTheDocument();
+    expect(screen.getAllByText('Revisão necessária').length).toBeGreaterThan(0);
   });
 
   it('ignores a stale worker response after a source reselection', async () => {
@@ -258,6 +328,7 @@ describe('workflow navigation', () => {
     await user.click(screen.getByRole('button', { name: 'Avançar' }));
     await user.click(screen.getByLabelText(/TabelaDestino/));
     await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByRole('button', { name: 'Aceitar ID' }));
     await user.click(screen.getByRole('button', { name: 'Ignorar Nome' }));
     await user.click(screen.getByRole('button', { name: 'Avançar' }));
 
@@ -299,6 +370,7 @@ describe('workflow navigation', () => {
     await user.click(screen.getByRole('button', { name: 'Avançar' }));
     await user.click(screen.getByLabelText(/TabelaDestino/));
     await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByRole('button', { name: 'Aceitar ID' }));
     await user.click(screen.getByRole('button', { name: 'Ignorar Nome' }));
     await user.click(screen.getByRole('button', { name: 'Avançar' }));
     await user.click(screen.getByRole('button', { name: 'Avançar' }));
@@ -363,6 +435,114 @@ describe('mapping and summary invariants', () => {
     expect(within(screen.getByText('Mantidos').parentElement as HTMLElement).getByText('1')).toBeInTheDocument();
     expect(within(screen.getByText('Duplicados').parentElement as HTMLElement).getByText('1')).toBeInTheDocument();
     expect(within(screen.getByText('Rejeitados').parentElement as HTMLElement).getByText('3')).toBeInTheDocument();
+  });
+
+  it('builds rejection rows from validation and planner rejections with original values', () => {
+    const rows = buildRejectedRows(
+      sourceDataset,
+      {
+        isValid: false,
+        issues: [{
+          rowId: 'source-2', sourceRowNumber: 2, columnId: 'nome__1', code: 'required', value: '', message: 'Nome obrigatório',
+        }],
+      },
+      {
+        mode: 'update', headerRow: 2, clears: [], inserts: [], updates: [], kept: [], duplicates: [], assignments: [],
+        rejected: [{
+          incomingRowId: 'source-3', reason: 'missing-update-key', keyColumnIds: ['id__1'], keyValues: [null],
+        }],
+      },
+    );
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        sourceRowNumber: 2,
+        originalRelevantFields: { id__1: 1, nome__1: 'Ana' },
+        rejectionReason: 'Nome obrigatório',
+        failedRuleOrTransform: 'required',
+      }),
+      expect.objectContaining({
+        sourceRowNumber: 3,
+        originalRelevantFields: { id__1: 2, nome__1: 'Bruno' },
+        rejectionReason: 'Chave de atualização ausente.',
+        failedRuleOrTransform: 'missing-update-key',
+      }),
+    ]);
+  });
+});
+
+describe('final export safeguards', () => {
+  it('uses one fixed-value dataset for validation and write planning', async () => {
+    const user = userEvent.setup();
+    const worker = new FakeWorker();
+    render(<App workerFactory={() => worker} />);
+
+    await importSource(user);
+    await chooseTemplate(user);
+    await chooseDestination(user);
+    await user.click(screen.getByRole('button', { name: 'Aceitar ID' }));
+    await user.selectOptions(screen.getByLabelText('Destino para Nome'), 'produto__1');
+    await user.click(screen.getByRole('button', { name: 'Usar valor fixo Nome' }));
+    await user.type(screen.getByLabelText('Valor fixo para Nome'), 'Constante');
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByRole('button', { name: 'Executar validação' }));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+
+    const validation = worker.requests.find(({ type }) => type === 'VALIDATE');
+    const plan = worker.requests.find(({ type }) => type === 'PLAN_WRITE');
+    expect(validation?.type === 'VALIDATE' && validation.dataset.rows[0].values.nome__1).toBe('Constante');
+    expect(plan?.type === 'PLAN_WRITE' && plan.input.incoming.rows[0].values.nome__1).toBe('Constante');
+  });
+
+  it('invalidates an update plan immediately when key columns change', async () => {
+    const user = userEvent.setup();
+    const worker = new FakeWorker();
+    render(<App workerFactory={() => worker} />);
+
+    await prepareSummary(user, 'update');
+    await user.click(screen.getByRole('button', { name: 'Modo de gravação' }));
+    await user.click(screen.getByRole('checkbox', { name: 'ID' }));
+    await user.click(screen.getByRole('button', { name: 'Resumo' }));
+
+    expect(screen.queryByText('Inseridos')).not.toBeInTheDocument();
+  });
+
+  it('shows worker export risks and requires explicit soft-risk confirmation', async () => {
+    const user = userEvent.setup();
+    const worker = new FakeWorker([{
+      code: 'formula-overwrite',
+      severity: 'soft',
+      message: 'Uma fórmula será sobrescrita.',
+      partPath: 'xl/worksheets/sheet1.xml',
+    }]);
+    render(<App workerFactory={() => worker} />);
+
+    await prepareSummary(user);
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+
+    expect(await screen.findByText('Uma fórmula será sobrescrita.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Exportar .xlsx' })).toBeDisabled();
+    await user.click(screen.getByRole('checkbox', { name: /Confirmar risco formula-overwrite/ }));
+    expect(screen.getByRole('button', { name: 'Exportar .xlsx' })).toBeEnabled();
+  });
+
+  it('displays hard risks and keeps export blocked', async () => {
+    const user = userEvent.setup();
+    const worker = new FakeWorker([{
+      code: 'protected-destination-sheet',
+      severity: 'hard',
+      message: 'A aba está protegida.',
+    }]);
+    render(<App workerFactory={() => worker} />);
+
+    await prepareSummary(user);
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+
+    expect(await screen.findByText('A aba está protegida.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Exportar .xlsx' })).toBeDisabled();
   });
 });
 

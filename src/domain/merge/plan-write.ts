@@ -61,8 +61,13 @@ function duplicateClassifications(
     }));
 }
 
-function valuesMatch(incoming: DataRow, existing: DataRow): boolean {
-  const columnIds = new Set([...Object.keys(incoming.values), ...Object.keys(existing.values)]);
+function valuesMatch(
+  incoming: DataRow,
+  existing: DataRow,
+  comparedColumnIds?: readonly string[],
+): boolean {
+  const columnIds = comparedColumnIds
+    ?? [...new Set([...Object.keys(incoming.values), ...Object.keys(existing.values)])];
   return [...columnIds].every((columnId) => Object.is(
     incoming.values[columnId] ?? null,
     existing.values[columnId] ?? null,
@@ -198,7 +203,7 @@ function planUpdate(input: WritePlanInput, keyColumnIds: readonly string[]): Wri
       assignments.push(assignment('insert', planned.incomingRowId, planned.destinationRow));
       continue;
     }
-    if (valuesMatch(incomingRow, existingRow)) {
+    if (valuesMatch(incomingRow, existingRow, input.comparedColumnIds)) {
       const planned: WriteKeep = {
         incomingRowId: incomingRow.rowId,
         existingRowId: existingRow.rowId,
@@ -346,7 +351,7 @@ export async function planWriteInBatches(
         assignments.push(assignment('insert', planned.incomingRowId, planned.destinationRow));
         return;
       }
-      if (valuesMatch(incomingRow, existingRow)) {
+      if (valuesMatch(incomingRow, existingRow, input.comparedColumnIds)) {
         const planned: WriteKeep = { incomingRowId: incomingRow.rowId, existingRowId: existingRow.rowId, destinationRow: existingRow.sourceRowNumber };
         kept.push(planned);
         assignments.push(assignment('keep', planned.incomingRowId, planned.destinationRow, planned.existingRowId));

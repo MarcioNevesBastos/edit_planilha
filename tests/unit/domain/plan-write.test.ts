@@ -118,6 +118,34 @@ describe('planWrite', () => {
     ]);
   });
 
+  it('compares only resolved exported fields when deciding whether an update changed', () => {
+    const incoming = dataset([
+      row('incoming-keep', 2, { id__1: 1, name__1: 'Ana', ignored__1: 'novo' }),
+      row('incoming-fixed-update', 3, { id__1: 2, name__1: 'Valor fixo', ignored__1: 'qualquer' }),
+    ]);
+    const existing = dataset([
+      row('existing-keep', 6, { id__1: 1, name__1: 'Ana', ignored__1: null }),
+      row('existing-update', 7, { id__1: 2, name__1: 'Valor antigo', ignored__1: null }),
+    ]);
+
+    const result = planWrite({
+      mode: 'update',
+      incoming,
+      existing,
+      destination: { headerRow: 5, dataStartRow: 6 },
+      keyColumnIds: ['id__1'],
+      comparedColumnIds: ['id__1', 'name__1'],
+    });
+
+    expect(result.kept.map(({ incomingRowId }) => incomingRowId)).toEqual(['incoming-keep']);
+    expect(result.updates).toEqual([{
+      incomingRowId: 'incoming-fixed-update',
+      existingRowId: 'existing-update',
+      destinationRow: 7,
+      values: { id__1: 2, name__1: 'Valor fixo', ignored__1: 'qualquer' },
+    }]);
+  });
+
   it('uses composite keys and explicitly rejects every ambiguous incoming or existing duplicate', () => {
     const incoming = dataset([
       row('incoming-update', 2, { office__1: 'SP', code__1: 'A', name__1: 'Ana Atualizada' }),

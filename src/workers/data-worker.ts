@@ -1,13 +1,15 @@
 import { CancellationRegistry } from '../utils/cancellation';
 import type { CellValue, DataRow, Dataset } from '../domain/dataset/types';
 import { planWriteInBatches } from '../domain/merge/plan-write';
-import { applyTransform } from '../domain/transforms/apply-transform';
+import { applyTransform, compareDataRows } from '../domain/transforms/apply-transform';
 import type { TransformCommand } from '../domain/transforms/types';
 import { validateRow } from '../domain/validation/validate-row';
 import type { ValidationIssue, ValidationRule } from '../domain/validation/types';
-import { readSource } from '../io/source/read-source';
-import { exportWorkbook } from '../io/template/export-workbook';
+import { listSourceSheets, readSource } from '../io/source/read-source';
+import { exportWorkbook, scanExportRisks } from '../io/template/export-workbook';
+import { extractDestinationDataset } from '../io/template/extract-destination';
 import { openOoxmlPackage } from '../io/template/ooxml-package';
+import { indexWorkbook } from '../io/template/workbook-index';
 import {
   DEFAULT_WORKER_BATCH_SIZE,
   isWorkerControlMessage,
@@ -35,13 +37,9 @@ class OperationCancelled extends Error {
   }
 }
 
-class UnsupportedLargeOperation extends Error {
-  public constructor(operation: string, rowCount: number, batchSize: number) {
-    super(`${operation} exceeds the worker row budget: ${rowCount} rows cannot be processed in batches of ${batchSize}.`);
-  }
-}
-
 const ROW_BATCHED_TRANSFORM_TYPES: ReadonlySet<TransformCommand['type']> = new Set([
+  'filter',
+  'removeEmptyRows',
   'splitColumn',
   'combineColumns',
   'findReplace',
@@ -162,6 +160,31 @@ async function dispatchRequest(
       ensureNotCancelled(request.operationId);
       return { type: 'IMPORT_SOURCE', dataset };
     }
+    case 'LIST_SOURCE_SHEETS': {
+      ensureNotCancelled(request.operationId);
+      const file = new File([request.source.buffer], request.source.name, {
+        type: request.source.mediaType ?? '',
+      });
+      const sheetNames = await listSourceSheets(file);
+      ensureNotCancelled(request.operationId);
+      return { type: 'LIST_SOURCE_SHEETS', sheetNames };
+    }
+    case 'INDEX_TEMPLATE': {
+      ensureNotCancelled(request.operationId);
+      const index = await indexWorkbook(await openOoxmlPackage(request.templateBuffer));
+      ensureNotCancelled(request.operationId);
+      return { type: 'INDEX_TEMPLATE', index };
+    }
+    case 'EXTRACT_DESTINATION': {
+      ensureNotCancelled(request.operationId);
+      const dataset = extractDestinationDataset(
+        request.templateBuffer,
+        request.sheetName,
+        request.range,
+      );
+      ensureNotCancelled(request.operationId);
+      return { type: 'EXTRACT_DESTINATION', dataset };
+    }
     case 'APPLY_TRANSFORMS': {
       let dataset = request.dataset;
       const batchSize = normalizeBatchSize(request.batchSize);
@@ -177,8 +200,26 @@ async function dispatchRequest(
           );
           continue;
         }
-        if (isRowHeavyTransform(command) && dataset.rows.length > batchSize) {
-          throw new UnsupportedLargeOperation(`Transform ${command.type}`, dataset.rows.length, batchSize);
+        if (command.type === 'sort') {
+          dataset = await applySortInBatches(
+            dataset,
+            command,
+            request.operationId,
+            batchSize,
+            ensureNotCancelled,
+            reportProgress,
+          );
+          continue;
+        }
+        if (command.type === 'deduplicate') {
+          dataset = await applyDeduplicateInBatches(
+            dataset,
+            command,
+            request.operationId,
+            batchSize,
+            runBatches,
+          );
+          continue;
         }
         dataset = applyTransform(dataset, command);
       }
@@ -251,6 +292,14 @@ async function dispatchRequest(
       ensureNotCancelled(request.operationId);
       return { type: 'EXPORT', buffer };
     }
+    case 'SCAN_EXPORT_RISKS': {
+      ensureNotCancelled(request.operationId);
+      const packageForScan = await openOoxmlPackage(request.templateBuffer);
+      ensureNotCancelled(request.operationId);
+      const risks = await scanExportRisks({ ...request.input, package: packageForScan });
+      ensureNotCancelled(request.operationId);
+      return { type: 'EXPORT_RISKS', risks };
+    }
     default: return assertNever(request);
   }
 }
@@ -261,13 +310,6 @@ function normalizeBatchSize(batchSize: number | undefined): number {
     throw new RangeError('batchSize must be a positive whole number');
   }
   return value;
-}
-
-function isRowHeavyTransform(command: TransformCommand): boolean {
-  return command.type === 'sort'
-    || command.type === 'filter'
-    || command.type === 'removeEmptyRows'
-    || command.type === 'deduplicate';
 }
 
 async function applyTransformInRowBatches(
@@ -309,6 +351,105 @@ async function applyTransformInRowBatches(
     },
   );
   return { columns, rows };
+}
+
+async function applySortInBatches(
+  dataset: Dataset,
+  command: Extract<TransformCommand, { type: 'sort' }>,
+  operationId: string,
+  batchSize: number,
+  ensureNotCancelled: (operationId: string) => void,
+  reportProgress: (operationId: string, completed: number, total: number, phase: WorkerPhase) => void,
+): Promise<Dataset> {
+  applyTransform({ columns: dataset.columns, rows: [] }, command);
+  if (dataset.rows.length < 2) return dataset;
+  let source = [...dataset.rows];
+  let target = new Array<DataRow>(source.length);
+
+  for (let width = 1; width < source.length; width *= 2) {
+    let completed = 0;
+    for (let left = 0; left < source.length; left += width * 2) {
+      const middle = Math.min(left + width, source.length);
+      const right = Math.min(left + width * 2, source.length);
+      let leftIndex = left;
+      let rightIndex = middle;
+      for (let output = left; output < right; output += 1) {
+        target[output] = rightIndex >= right
+          || (leftIndex < middle && compareDataRows(source[leftIndex], source[rightIndex], command.sorts) <= 0)
+          ? source[leftIndex++]
+          : source[rightIndex++];
+        completed += 1;
+        if (completed % batchSize === 0) {
+          ensureNotCancelled(operationId);
+          reportProgress(operationId, completed, source.length, 'transform');
+          await yieldToMessageLoop();
+          ensureNotCancelled(operationId);
+        }
+      }
+    }
+    if (completed % batchSize !== 0) {
+      reportProgress(operationId, completed, source.length, 'transform');
+      await yieldToMessageLoop();
+      ensureNotCancelled(operationId);
+    }
+    [source, target] = [target, source];
+  }
+  return { columns: dataset.columns, rows: source };
+}
+
+async function applyDeduplicateInBatches(
+  dataset: Dataset,
+  command: Extract<TransformCommand, { type: 'deduplicate' }>,
+  operationId: string,
+  batchSize: number,
+  runBatches: (
+    operationId: string,
+    total: number,
+    requestedBatchSize: number | undefined,
+    phase: WorkerPhase,
+    processBatch: (start: number, end: number) => void,
+  ) => Promise<void>,
+): Promise<Dataset> {
+  applyTransform({ columns: dataset.columns, rows: [] }, command);
+  if (command.keep === 'first') {
+    const seen = new Set<string>();
+    const rows: DataRow[] = [];
+    await runBatches(operationId, dataset.rows.length, batchSize, 'transform', (start, end) => {
+      for (let index = start; index < end; index += 1) {
+        const row = dataset.rows[index];
+        const key = transformKey(command.columnIds.map((columnId) => row.values[columnId]));
+        if (!seen.has(key)) {
+          seen.add(key);
+          rows.push(row);
+        }
+      }
+    });
+    return { columns: dataset.columns, rows };
+  }
+
+  const lastIndexByKey = new Map<string, number>();
+  await runBatches(operationId, dataset.rows.length, batchSize, 'transform', (start, end) => {
+    for (let index = start; index < end; index += 1) {
+      const row = dataset.rows[index];
+      lastIndexByKey.set(
+        transformKey(command.columnIds.map((columnId) => row.values[columnId])),
+        index,
+      );
+    }
+  });
+  const rows: DataRow[] = [];
+  await runBatches(operationId, dataset.rows.length, batchSize, 'transform', (start, end) => {
+    for (let index = start; index < end; index += 1) {
+      const row = dataset.rows[index];
+      const key = transformKey(command.columnIds.map((columnId) => row.values[columnId]));
+      if (lastIndexByKey.get(key) === index) rows.push(row);
+    }
+  });
+  return { columns: dataset.columns, rows };
+}
+
+function transformKey(values: readonly (CellValue | undefined)[]): string {
+  return JSON.stringify(values.map((value) => [typeof value, value]));
 }
 
 async function validateUniqueRuleInBatches(

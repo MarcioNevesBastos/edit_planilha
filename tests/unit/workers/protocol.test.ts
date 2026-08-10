@@ -18,9 +18,13 @@ function assertNever(value: never): never {
 function requestLabel(request: WorkerRequest): string {
   switch (request.type) {
     case 'IMPORT_SOURCE': return request.type;
+    case 'LIST_SOURCE_SHEETS': return request.type;
+    case 'INDEX_TEMPLATE': return request.type;
+    case 'EXTRACT_DESTINATION': return request.type;
     case 'APPLY_TRANSFORMS': return request.type;
     case 'VALIDATE': return request.type;
     case 'PLAN_WRITE': return request.type;
+    case 'SCAN_EXPORT_RISKS': return request.type;
     case 'EXPORT': return request.type;
     default: return assertNever(request);
   }
@@ -42,6 +46,9 @@ describe('worker protocol', () => {
     const templateBuffer = new ArrayBuffer(8);
     const requests: WorkerRequest[] = [
       { type: 'IMPORT_SOURCE', operationId: 'import', source: { name: 'source.csv', buffer: sourceBuffer } },
+      { type: 'LIST_SOURCE_SHEETS', operationId: 'list', source: { name: 'source.xlsx', buffer: sourceBuffer } },
+      { type: 'INDEX_TEMPLATE', operationId: 'index', templateBuffer },
+      { type: 'EXTRACT_DESTINATION', operationId: 'extract', templateBuffer, sheetName: 'Data', range: 'A1:A2' },
       { type: 'APPLY_TRANSFORMS', operationId: 'transform', dataset, commands: [] },
       { type: 'VALIDATE', operationId: 'validate', dataset, rules: [] },
       {
@@ -52,6 +59,17 @@ describe('worker protocol', () => {
           incoming: dataset,
           existing: dataset,
           destination: { headerRow: 1, dataStartRow: 2 },
+        },
+      },
+      {
+        type: 'SCAN_EXPORT_RISKS',
+        operationId: 'risks',
+        templateBuffer,
+        input: {
+          destination: { sheetName: 'Data', range: 'A1:A2', dataStartRow: 2, templateRow: 2, columns: [] },
+          mappings: [],
+          writePlan: { mode: 'replace', headerRow: 1, clears: [], inserts: [], updates: [], kept: [], duplicates: [], rejected: [], assignments: [] },
+          validationResult: { isValid: true, issues: [] },
         },
       },
       {
@@ -82,7 +100,8 @@ describe('worker protocol', () => {
     ];
 
     expect(requests.map(requestLabel)).toEqual([
-      'IMPORT_SOURCE', 'APPLY_TRANSFORMS', 'VALIDATE', 'PLAN_WRITE', 'EXPORT',
+      'IMPORT_SOURCE', 'LIST_SOURCE_SHEETS', 'INDEX_TEMPLATE', 'EXTRACT_DESTINATION',
+      'APPLY_TRANSFORMS', 'VALIDATE', 'PLAN_WRITE', 'SCAN_EXPORT_RISKS', 'EXPORT',
     ]);
     expect(responses.map(responseLabel)).toEqual(['PROGRESS', 'RESULT', 'ERROR', 'CANCELLED']);
   });

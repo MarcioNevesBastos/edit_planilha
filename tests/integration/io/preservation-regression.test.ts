@@ -91,7 +91,7 @@ describe('export compatibility risks', () => {
       dataStartRow: 3,
       templateRow: 5,
       tablePath: undefined,
-      definedName: 'DestinoPrincipal',
+      definedName: { name: 'DestinoPrincipal', localSheetId: null },
       columns: [{ id: 'target_product', column: 'E' }],
     });
     risky.mappings = [{
@@ -173,7 +173,7 @@ describe('export compatibility risks', () => {
     const inputWithFutureRow = baseInput({
       range: 'A2:E5',
       tablePath: undefined,
-      definedName: 'DestinoPrincipal',
+      definedName: { name: 'DestinoPrincipal', localSheetId: null },
       columns: [{ id: 'target_product', column: 'E' }],
     });
     inputWithFutureRow.mappings = [{
@@ -222,7 +222,7 @@ describe('export compatibility risks', () => {
     const named = baseInput({
       range: 'A2:E5',
       tablePath: undefined,
-      definedName: 'DestinoPrincipal',
+      definedName: { name: 'DestinoPrincipal', localSheetId: null },
     });
     const output = await exportWorkbook(named);
     const exported = await openOoxmlPackage(await output.arrayBuffer());
@@ -256,6 +256,38 @@ describe('export compatibility risks', () => {
         expect.objectContaining({ code: 'invalid-destination-geometry', severity: 'hard' }),
       ]),
     });
+  });
+
+  it('hard-blocks planned writes beyond the Excel row limit', async () => {
+    const invalid = baseInput();
+    invalid.writePlan.inserts[0].destinationRow = 1_048_577;
+
+    expect(await scanExportRisks(invalid)).toContainEqual(expect.objectContaining({
+      code: 'write-row-exceeds-excel-limit',
+      severity: 'hard',
+    }));
+  });
+
+  it('updates only the selected defined name scope when names collide', async () => {
+    pkg.updatePart(
+      'xl/workbook.xml',
+      textPart('xl/workbook.xml').replace(
+        '</definedNames>',
+        '<definedName name="DestinoPrincipal" localSheetId="0">\'Dados Modelo\'!$A$2:$E$5</definedName></definedNames>',
+      ),
+    );
+    const scoped = baseInput({
+      range: 'A2:E5',
+      tablePath: undefined,
+      definedName: { name: 'DestinoPrincipal', localSheetId: 0 },
+    });
+
+    const output = await exportWorkbook(scoped);
+    const exported = await openOoxmlPackage(await output.arrayBuffer());
+    const workbook = new TextDecoder().decode(exported.readPart('xl/workbook.xml'));
+
+    expect(workbook).toContain('<definedName name="DestinoPrincipal">\'Dados Modelo\'!$A$2:$E$5</definedName>');
+    expect(workbook).toContain('<definedName name="DestinoPrincipal" localSheetId="0">\'Dados Modelo\'!$A$2:$E$6</definedName>');
   });
 });
 

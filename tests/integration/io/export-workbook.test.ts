@@ -162,17 +162,22 @@ describe('exportWorkbook', () => {
     const output = await exportWorkbook(input(writePlan, valid));
     const exported = await openOoxmlPackage(await output.arrayBuffer());
     const worksheet = textPart(exported, 'xl/worksheets/sheet1.xml');
+    const drawing = textPart(exported, 'xl/drawings/drawing1.xml');
 
     expect(worksheet).toContain('<c r="A6"><v>4</v></c>');
     expect(worksheet).toContain('<c r="D6" s="2"><v>40</v></c>');
     expect(worksheet).toContain('<c r="E6" s="2"><f>C6*D6</f>');
     expect(worksheet).toContain('<c r="E7" s="2"><f>C7*D7</f>');
-    expect(worksheet).toContain('<c r="E8" s="2"><f>SUM(E5:E7)</f>');
+    expect(worksheet).toContain('<c r="E8" s="2"><f>SUM(E3:E7)</f>');
+    expect(drawing).toContain('<xdr:to><xdr:col>11</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>12</xdr:row>');
+    expect(drawing).toContain('<xdr:from><xdr:col>6</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>13</xdr:row>');
     expect(textPart(exported, 'xl/tables/table1.xml')).toContain('ref="A2:D7"');
     expectParts(
       exported,
       new Map([...originalPackage].filter(([path]) => (
-        path !== 'xl/worksheets/sheet1.xml' && path !== 'xl/tables/table1.xml'
+        path !== 'xl/worksheets/sheet1.xml'
+        && path !== 'xl/tables/table1.xml'
+        && path !== 'xl/drawings/drawing1.xml'
       ))),
     );
   });

@@ -6,9 +6,11 @@ import { shiftFormulaA1 } from './formula-shift';
 import { expandDestination } from './model-expander';
 import { openOoxmlPackage, type OoxmlPackage } from './ooxml-package';
 import { addRejectedSheet, type RejectedSheetRow } from './rejected-sheet';
+import type { DefinedNameIdentity } from './destination-detector';
 import { indexWorkbook, type WorksheetIndex } from './workbook-index';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const EXCEL_MAX_ROW = 1_048_576;
 
 export type ExportRiskSeverity = 'hard' | 'soft';
 
@@ -30,7 +32,7 @@ export interface ExportDestination {
   dataStartRow: number;
   templateRow: number;
   tablePath?: string;
-  definedName?: string;
+  definedName?: DefinedNameIdentity;
   columns: readonly ExportDestinationColumn[];
 }
 
@@ -42,6 +44,7 @@ export interface ExportInput {
   validationResult: ValidationResult;
   rejectedRows?: readonly RejectedSheetRow[];
   reviewedRiskCodes?: readonly string[];
+  reviewedRiskIds?: readonly string[];
 }
 
 export type ExportBatchPhase = 'expansion' | 'write' | 'rejected';
@@ -62,6 +65,10 @@ export class ExportCompatibilityError extends Error {
     super(risks.map((risk) => risk.message).join('; '));
     this.name = 'ExportCompatibilityError';
   }
+}
+
+export function exportRiskIdentifier(risk: ExportRisk): string {
+  return `${risk.code}|${risk.partPath ?? ''}`;
 }
 
 interface CellRange {
@@ -174,8 +181,10 @@ export async function scanExportRisks(input: ExportInput): Promise<ExportRisk[]>
 export async function exportWorkbook(input: ExportInput, options?: ExportBatchOptions): Promise<Blob> {
   const risks = await scanExportRisks(input);
   const reviewed = new Set(input.reviewedRiskCodes ?? []);
+  const reviewedIds = new Set(input.reviewedRiskIds ?? []);
   const blockers = risks.filter(
-    (risk) => risk.severity === 'hard' || !reviewed.has(risk.code),
+    (risk) => risk.severity === 'hard'
+      || (!reviewed.has(risk.code) && !reviewedIds.has(exportRiskIdentifier(risk))),
   );
   if (blockers.length > 0) {
     throw new ExportCompatibilityError(blockers);
@@ -396,6 +405,7 @@ function scanNamedRangeRisks(
   definedNames: readonly {
     name: string;
     formula: string;
+    localSheetId: number | null;
     sheetName: string | null;
     range: string | null;
   }[],
@@ -417,7 +427,10 @@ function scanNamedRangeRisks(
   ));
 
   if (input.destination.definedName) {
-    const declared = definedNames.find(({ name }) => name === input.destination.definedName);
+    const identity = input.destination.definedName;
+    const declared = definedNames.find(({ name, localSheetId }) => (
+      name === identity.name && localSheetId === identity.localSheetId
+    ));
     if (!declared || declared.sheetName !== input.destination.sheetName || !declared.range
       || normalizeRange(declared.range) !== normalizeRange(input.destination.range)) {
       addRisk({
@@ -430,7 +443,7 @@ function scanNamedRangeRisks(
       addRisk({
         code: 'named-range-formula-unsupported',
         severity: 'hard',
-        message: `Defined-name formula cannot be extended safely: ${input.destination.definedName}.`,
+        message: `Defined-name formula cannot be extended safely: ${identity.name}.`,
       });
     }
     return;
@@ -464,6 +477,13 @@ function scanPlanRisks(input: ExportInput, addRisk: (risk: ExportRisk) => void):
         code: 'write-outside-data-rows',
         severity: 'hard',
         message: `Write row ${action.destinationRow} is outside destination data rows.`,
+      });
+    }
+    if (Number.isSafeInteger(action.destinationRow) && action.destinationRow > EXCEL_MAX_ROW) {
+      addRisk({
+        code: 'write-row-exceeds-excel-limit',
+        severity: 'hard',
+        message: `Write row ${action.destinationRow} exceeds Excel's maximum row ${EXCEL_MAX_ROW}.`,
       });
     }
   }
@@ -627,17 +647,19 @@ function canExtendDefinedNameFormula(formula: string): boolean {
 function updateDefinedName(
   pkg: OoxmlPackage,
   workbookPath: string,
-  definedName: string,
+  definedName: DefinedNameIdentity,
   targetLastRow: number,
 ): void {
   const workbook = decode(pkg.readPart(workbookPath));
-  const namePattern = escapeRegExp(definedName);
-  const pattern = new RegExp(
-    `(<definedName\\b[^>]*\\bname="${namePattern}"[^>]*>)([\\s\\S]*?)(</definedName>)`,
-  );
-  const match = workbook.match(pattern);
+  const matches = [...workbook.matchAll(/(<definedName\b[^>]*>)([\s\S]*?)(<\/definedName>)/g)];
+  const match = matches.find((candidate) => {
+    const tag = candidate[1];
+    const localSheetId = attribute(tag, 'localSheetId');
+    return attribute(tag, 'name') === definedName.name
+      && (localSheetId === null ? null : Number(localSheetId)) === definedName.localSheetId;
+  });
   if (!match) {
-    throw new Error(`Defined name was not found: ${definedName}`);
+    throw new Error(`Defined name was not found: ${definedName.name}`);
   }
   const formula = match[2];
   const updatedFormula = formula.replace(
@@ -645,7 +667,7 @@ function updateDefinedName(
     `$1${targetLastRow}`,
   );
   if (updatedFormula === formula) {
-    throw new Error(`Defined-name formula cannot be extended: ${definedName}`);
+    throw new Error(`Defined-name formula cannot be extended: ${definedName.name}`);
   }
   pkg.updatePart(workbookPath, workbook.replace(match[0], `${match[1]}${updatedFormula}${match[3]}`));
 }

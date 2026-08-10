@@ -2,7 +2,8 @@ import type { Dataset } from '../domain/dataset/types';
 import type { WritePlan, WritePlanInput } from '../domain/merge/types';
 import type { TransformCommand } from '../domain/transforms/types';
 import type { ValidationResult, ValidationRule } from '../domain/validation/types';
-import type { ExportInput } from '../io/template/export-workbook';
+import type { ExportInput, ExportRisk } from '../io/template/export-workbook';
+import type { WorkbookIndex } from '../io/template/workbook-index';
 import type { ReadSourceOptions } from '../io/source/types';
 
 export const DEFAULT_WORKER_BATCH_SIZE = 1_000;
@@ -22,16 +23,24 @@ export interface SourceBuffer {
 
 export type WorkerRequest =
   | ({ type: 'IMPORT_SOURCE'; source: SourceBuffer; options?: ReadSourceOptions } & WorkerRequestBase)
+  | ({ type: 'LIST_SOURCE_SHEETS'; source: SourceBuffer } & WorkerRequestBase)
+  | ({ type: 'INDEX_TEMPLATE'; templateBuffer: ArrayBuffer } & WorkerRequestBase)
+  | ({ type: 'EXTRACT_DESTINATION'; templateBuffer: ArrayBuffer; sheetName: string; range: string } & WorkerRequestBase)
   | ({ type: 'APPLY_TRANSFORMS'; dataset: Dataset; commands: readonly TransformCommand[] } & WorkerRequestBase)
   | ({ type: 'VALIDATE'; dataset: Dataset; rules: readonly ValidationRule[] } & WorkerRequestBase)
   | ({ type: 'PLAN_WRITE'; input: WritePlanInput } & WorkerRequestBase)
+  | ({ type: 'SCAN_EXPORT_RISKS'; templateBuffer: ArrayBuffer; input: Omit<ExportInput, 'package'> } & WorkerRequestBase)
   | ({ type: 'EXPORT'; templateBuffer: ArrayBuffer; input: Omit<ExportInput, 'package'> } & WorkerRequestBase);
 
 export type WorkerResult =
   | { type: 'IMPORT_SOURCE'; dataset: Dataset }
+  | { type: 'LIST_SOURCE_SHEETS'; sheetNames: string[] }
+  | { type: 'INDEX_TEMPLATE'; index: WorkbookIndex }
+  | { type: 'EXTRACT_DESTINATION'; dataset: Dataset }
   | { type: 'APPLY_TRANSFORMS'; dataset: Dataset }
   | { type: 'VALIDATE'; validationResult: ValidationResult }
   | { type: 'PLAN_WRITE'; writePlan: WritePlan }
+  | { type: 'EXPORT_RISKS'; risks: ExportRisk[] }
   | { type: 'EXPORT'; buffer: ArrayBuffer };
 
 export type WorkerResponse =
@@ -51,6 +60,10 @@ export interface WorkerMessageTarget {
 export function transferablesForRequest(request: WorkerRequest): Transferable[] {
   switch (request.type) {
     case 'IMPORT_SOURCE': return [request.source.buffer];
+    case 'LIST_SOURCE_SHEETS': return [request.source.buffer];
+    case 'INDEX_TEMPLATE':
+    case 'EXTRACT_DESTINATION':
+    case 'SCAN_EXPORT_RISKS': return [request.templateBuffer];
     case 'EXPORT': return [request.templateBuffer];
     case 'APPLY_TRANSFORMS':
     case 'VALIDATE':

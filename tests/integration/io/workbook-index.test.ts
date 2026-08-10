@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  destinationDetectionWarnings,
   manualDestinationSelectionAction,
   detectDestination,
 } from '../../../src/io/template/destination-detector';
@@ -116,7 +117,7 @@ describe('destination detector', () => {
         range: 'A2:E5',
         confidence: 'high',
         explanation: 'Defined name "DestinoPrincipal" identifies this destination range.',
-        definedName: 'DestinoPrincipal',
+        definedName: { name: 'DestinoPrincipal', localSheetId: null },
       },
       {
         kind: 'detected-region',
@@ -137,5 +138,33 @@ describe('destination detector', () => {
     expect(detectDestination(index, 'Dados Modelo').some(
       (candidate) => String(candidate.kind) === 'manual-selection',
     )).toBe(false);
+  });
+
+  it('excludes header-only regions and explains why they cannot be selected', () => {
+    const headerOnly: WorkbookIndex = {
+      ...index,
+      sheets: index.sheets.map((sheet) => sheet.name === 'Dados Modelo'
+        ? {
+            ...sheet,
+            tables: [{ ...sheet.tables[0], range: 'A2:D2', autoFilterRange: 'A2:D2' }],
+            detectedRegions: [{ range: 'A2:D2', headerRow: 2, dataRowCount: 0 }],
+          }
+        : sheet),
+      definedNames: [{
+        name: 'CabecalhoSomente',
+        formula: "'Dados Modelo'!$A$2:$D$2",
+        localSheetId: null,
+        hidden: false,
+        sheetName: 'Dados Modelo',
+        range: 'A2:D2',
+      }],
+    };
+
+    expect(detectDestination(headerOnly, 'Dados Modelo')).toEqual([]);
+    expect(destinationDetectionWarnings(headerOnly, 'Dados Modelo')).toEqual([
+      'TabelaDestino: o destino contém somente cabeçalhos e precisa de ao menos uma linha modelo.',
+      'CabecalhoSomente: o destino contém somente cabeçalhos e precisa de ao menos uma linha modelo.',
+      'A2:D2: o destino contém somente cabeçalhos e precisa de ao menos uma linha modelo.',
+    ]);
   });
 });

@@ -13,6 +13,7 @@ export interface WritePlanInput {
   existing: Dataset;
   destination: WriteDestination;
   keyColumnIds?: readonly string[];
+  comparedColumnIds?: readonly string[];
 }
 
 export interface WriteClear {

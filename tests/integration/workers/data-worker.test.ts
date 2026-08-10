@@ -52,6 +52,133 @@ describe('data worker dispatcher', () => {
     expect(plan).toMatchObject({ result: { writePlan: { inserts: [{ destinationRow: 2 }] } } });
   });
 
+  it('runs workbook sheet listing, indexing, and destination extraction inside the worker', async () => {
+    const messages: WorkerResponse[] = [];
+    const dispatcher = createDataWorkerDispatcher((message) => messages.push(message));
+    const source = await readFile(new URL('../../../src/test-fixtures/workbooks/source-basic.xlsx', import.meta.url));
+    const template = await readFile(new URL('../../../src/test-fixtures/workbooks/template-structured.xlsx', import.meta.url));
+    const sourceBuffer = source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength) as ArrayBuffer;
+    const templateBuffer = template.buffer.slice(template.byteOffset, template.byteOffset + template.byteLength) as ArrayBuffer;
+
+    await dispatcher.dispatch({
+      type: 'LIST_SOURCE_SHEETS',
+      operationId: 'list-source-sheets',
+      source: { name: 'source.xlsx', buffer: sourceBuffer },
+    });
+    await dispatcher.dispatch({
+      type: 'INDEX_TEMPLATE',
+      operationId: 'index-template',
+      templateBuffer,
+    });
+    await dispatcher.dispatch({
+      type: 'EXTRACT_DESTINATION',
+      operationId: 'extract-destination',
+      templateBuffer,
+      sheetName: 'Dados Modelo',
+      range: 'A2:D5',
+    });
+
+    expect(messages).toContainEqual(expect.objectContaining({
+      type: 'RESULT',
+      operationId: 'list-source-sheets',
+        result: expect.objectContaining({ type: 'LIST_SOURCE_SHEETS', sheetNames: ['Dados', 'Ignorada'] }),
+    }));
+    expect(messages).toContainEqual(expect.objectContaining({
+      type: 'RESULT',
+      operationId: 'index-template',
+      result: expect.objectContaining({
+        type: 'INDEX_TEMPLATE',
+        index: expect.objectContaining({ sheets: expect.arrayContaining([expect.objectContaining({ name: 'Dados Modelo' })]) }),
+      }),
+    }));
+    expect(messages).toContainEqual(expect.objectContaining({
+      type: 'RESULT',
+      operationId: 'extract-destination',
+      result: expect.objectContaining({
+        type: 'EXTRACT_DESTINATION',
+        dataset: expect.objectContaining({
+          columns: expect.arrayContaining([expect.objectContaining({ header: 'ID' })]),
+        }),
+      }),
+    }));
+  });
+
+  it('processes every global transform above the default batch size', async () => {
+    const rows = Array.from({ length: 1_001 }, (_, index) => row(
+      `r-${index}`,
+      index + 2,
+      { name__1: index % 10 === 0 ? null : index % 5 === 0 ? 'keep' : 1_001 - index },
+    ));
+    const cases = [
+      {
+        operationId: 'sort-global',
+        command: { type: 'sort' as const, sorts: [{ columnId: 'name__1', direction: 'asc' as const }] },
+        assertResult: (result: Dataset) => {
+          expect(result.rows).toHaveLength(1_001);
+          expect(result.rows.at(-1)?.values.name__1).toBeNull();
+        },
+      },
+      {
+        operationId: 'filter-global',
+        command: { type: 'filter' as const, columnId: 'name__1', operator: 'equals' as const, value: 'keep' },
+        assertResult: (result: Dataset) => expect(result.rows).toHaveLength(100),
+      },
+      {
+        operationId: 'remove-empty-global',
+        command: { type: 'removeEmptyRows' as const, columnIds: ['name__1'] },
+        assertResult: (result: Dataset) => expect(result.rows).toHaveLength(900),
+      },
+      {
+        operationId: 'deduplicate-global',
+        command: { type: 'deduplicate' as const, columnIds: ['name__1'], keep: 'first' as const },
+        assertResult: (result: Dataset) => expect(result.rows).toHaveLength(802),
+      },
+    ];
+
+    for (const current of cases) {
+      const messages: WorkerResponse[] = [];
+      const dispatcher = createDataWorkerDispatcher((message) => messages.push(message));
+      await dispatcher.dispatch({
+        type: 'APPLY_TRANSFORMS',
+        operationId: current.operationId,
+        dataset: dataset(rows),
+        commands: [current.command],
+        batchSize: 1_000,
+      });
+      const response = messages.find((message): message is Extract<WorkerResponse, { type: 'RESULT' }> => (
+        message.type === 'RESULT' && message.operationId === current.operationId
+      ));
+      expect(response?.result.type).toBe('APPLY_TRANSFORMS');
+      if (response?.result.type === 'APPLY_TRANSFORMS') current.assertResult(response.result.dataset);
+    }
+  });
+
+  it('cancels a global sort between worker batches', async () => {
+    const messages: WorkerResponse[] = [];
+    const dispatcher = createDataWorkerDispatcher((message) => {
+      messages.push(message);
+      if (message.type === 'PROGRESS' && message.operationId === 'sort-cancel' && message.completed >= 100) {
+        dispatcher.cancel('sort-cancel');
+      }
+    });
+    const input = dataset(Array.from({ length: 1_001 }, (_, index) => row(
+      `r-${index}`,
+      index + 2,
+      { name__1: 1_001 - index },
+    )));
+
+    await dispatcher.dispatch({
+      type: 'APPLY_TRANSFORMS',
+      operationId: 'sort-cancel',
+      dataset: input,
+      commands: [{ type: 'sort', sorts: [{ columnId: 'name__1', direction: 'asc' }] }],
+      batchSize: 100,
+    });
+
+    expect(messages).toContainEqual({ type: 'CANCELLED', operationId: 'sort-cancel' });
+    expect(messages.some((message) => message.type === 'RESULT' && message.operationId === 'sort-cancel')).toBe(false);
+  });
+
   it('emits row-batch progress and cancels only the requested operation before success', async () => {
     const messages: WorkerResponse[] = [];
     const dispatcher = createDataWorkerDispatcher((message) => {

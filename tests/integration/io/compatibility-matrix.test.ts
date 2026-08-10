@@ -59,18 +59,19 @@ describe('tested OOXML compatibility matrix', () => {
       },
       {
         feature: 'images',
-        status: 'preserved',
+        status: 'preserved-with-shifted-anchor',
         verified: samePart(source, exported, 'xl/media/image1.png')
-          && samePart(source, exported, 'xl/drawings/drawing1.xml')
+          && drawing.includes('<xdr:to><xdr:col>11</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>11</xdr:row>')
           && worksheet.includes('<drawing r:id="rId2"/>')
           && hasRelationship(worksheetRelationships, 'drawing', '../drawings/drawing1.xml')
           && hasRelationship(drawingRelationships, 'image', '../media/image1.png'),
       },
       {
         feature: 'charts',
-        status: 'preserved',
+        status: 'preserved-with-shifted-anchor',
         verified: samePart(source, exported, 'xl/charts/chart1.xml')
-          && samePart(source, exported, 'xl/drawings/drawing1.xml')
+          && drawing.includes('<xdr:from><xdr:col>6</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>12</xdr:row>')
+          && drawing.includes('<xdr:to><xdr:col>8</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>17</xdr:row>')
           && worksheet.includes('<drawing r:id="rId2"/>')
           && hasRelationship(worksheetRelationships, 'drawing', '../drawings/drawing1.xml')
           && hasRelationship(drawingRelationships, 'chart', '../charts/chart1.xml'),
@@ -103,8 +104,8 @@ describe('tested OOXML compatibility matrix', () => {
       { feature: 'formulas', status: 'preserved' },
       { feature: 'validation', status: 'preserved-and-expanded' },
       { feature: 'merges', status: 'preserved' },
-      { feature: 'images', status: 'preserved' },
-      { feature: 'charts', status: 'preserved' },
+      { feature: 'images', status: 'preserved-with-shifted-anchor' },
+      { feature: 'charts', status: 'preserved-with-shifted-anchor' },
       { feature: 'tables', status: 'preserved-and-expanded' },
       { feature: 'filters', status: 'preserved-and-expanded' },
       { feature: 'frozen panes', status: 'preserved' },

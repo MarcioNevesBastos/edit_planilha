@@ -1,5 +1,10 @@
 import type { WorkbookIndex } from './workbook-index';
 
+export interface DefinedNameIdentity {
+  name: string;
+  localSheetId: number | null;
+}
+
 export type DestinationConfidence = 'high' | 'medium';
 
 export type DestinationCandidate =
@@ -17,7 +22,7 @@ export type DestinationCandidate =
       range: string;
       confidence: DestinationConfidence;
       explanation: string;
-      definedName: string;
+      definedName: DefinedNameIdentity;
     }
   | {
       kind: 'detected-region';
@@ -46,7 +51,7 @@ export function detectDestination(
     return [];
   }
 
-  const tables: DestinationCandidate[] = sheet.tables.map((table) => ({
+  const tables: DestinationCandidate[] = sheet.tables.filter((table) => hasModelRow(table.range)).map((table) => ({
     kind: 'table',
     sheetName,
     range: table.range,
@@ -55,16 +60,18 @@ export function detectDestination(
     tableName: table.displayName,
   }));
   const namedRanges: DestinationCandidate[] = index.definedNames
-    .filter((definedName) => definedName.sheetName === sheetName && definedName.range)
+    .filter((definedName) => definedName.sheetName === sheetName
+      && definedName.range
+      && hasModelRow(definedName.range))
     .map((definedName) => ({
       kind: 'named-range',
       sheetName,
       range: definedName.range!,
       confidence: 'high',
       explanation: `Defined name "${definedName.name}" identifies this destination range.`,
-      definedName: definedName.name,
+      definedName: { name: definedName.name, localSheetId: definedName.localSheetId },
     }));
-  const detectedRegions: DestinationCandidate[] = sheet.detectedRegions.map((region) => ({
+  const detectedRegions: DestinationCandidate[] = sheet.detectedRegions.filter((region) => region.dataRowCount > 0).map((region) => ({
     kind: 'detected-region',
     sheetName,
     range: region.range,
@@ -73,4 +80,25 @@ export function detectDestination(
   }));
 
   return [...tables, ...namedRanges, ...detectedRegions];
+}
+
+export function destinationDetectionWarnings(
+  index: WorkbookIndex,
+  sheetName: string,
+): string[] {
+  const sheet = index.sheets.find((candidate) => candidate.name === sheetName);
+  if (!sheet) return [];
+  const warning = (label: string) => `${label}: o destino contém somente cabeçalhos e precisa de ao menos uma linha modelo.`;
+  return [
+    ...sheet.tables.filter((table) => !hasModelRow(table.range)).map((table) => warning(table.displayName)),
+    ...index.definedNames.filter((definedName) => definedName.sheetName === sheetName
+      && definedName.range
+      && !hasModelRow(definedName.range)).map((definedName) => warning(definedName.name)),
+    ...sheet.detectedRegions.filter((region) => region.dataRowCount === 0).map((region) => warning(region.range)),
+  ];
+}
+
+function hasModelRow(range: string): boolean {
+  const match = range.replaceAll('$', '').match(/^[A-Z]+(\d+)(?::[A-Z]+(\d+))?$/i);
+  return Boolean(match && Number(match[2] ?? match[1]) > Number(match[1]));
 }

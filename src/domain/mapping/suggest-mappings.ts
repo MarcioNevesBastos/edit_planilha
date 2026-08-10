@@ -102,7 +102,7 @@ export function suggestMappings(
         destinationColumnId: exact.destinationColumn.id,
         confidence: 'exact',
         score: 1,
-        status: 'accepted',
+        status: 'review-required',
       };
     }
 

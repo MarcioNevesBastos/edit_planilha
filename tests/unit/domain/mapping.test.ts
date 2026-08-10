@@ -14,7 +14,7 @@ describe('normalizeText', () => {
 });
 
 describe('suggestMappings', () => {
-  it('auto-accepts an exact normalized header match', () => {
+  it('requires explicit review for an exact normalized header match', () => {
     const suggestions = suggestMappings(
       [column('nome_do_cliente__1', ' Nome do Cliente ', 0)],
       [column('customer_name__1', 'nome-do-cliente', 0)],
@@ -25,7 +25,7 @@ describe('suggestMappings', () => {
       destinationColumnId: 'customer_name__1',
       confidence: 'exact',
       score: 1,
-      status: 'accepted',
+      status: 'review-required',
     }]);
   });
 
@@ -37,7 +37,7 @@ describe('suggestMappings', () => {
 
     expect(suggestions.map(({ destinationColumnId, confidence, status }) => ({ destinationColumnId, confidence, status }))).toEqual([
       { destinationColumnId: 'birth_date__1', confidence: 'high', status: 'review-required' },
-      { destinationColumnId: 'address__1', confidence: 'exact', status: 'accepted' },
+      { destinationColumnId: 'address__1', confidence: 'exact', status: 'review-required' },
     ]);
   });
 

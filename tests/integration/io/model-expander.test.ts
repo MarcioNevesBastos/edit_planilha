@@ -22,7 +22,7 @@ beforeEach(async () => {
 describe('expandDestination', () => {
   it('expands table ranges, inserts only required model rows, and preserves unrelated parts', async () => {
     const untouched = new Map(
-      ['xl/drawings/drawing1.xml', 'xl/charts/chart1.xml', 'xl/media/image1.png']
+      ['xl/charts/chart1.xml', 'xl/media/image1.png']
         .map((path) => [path, pkg.readPart(path)]),
     );
 
@@ -46,8 +46,14 @@ describe('expandDestination', () => {
     expect(worksheet).toContain('<row r="7"><c r="A7"');
     expect(worksheet).toContain('<c r="E7" s="2"><f>C7*D7</f>');
     expect(worksheet).toContain('<row r="8"><c r="D8" s="1"');
-    expect(worksheet).toContain('<c r="E8" s="2"><f>SUM(E5:E7)</f>');
+    expect(worksheet).toContain('<c r="E8" s="2"><f>SUM(E3:E7)</f>');
     expect(worksheet.match(/<row r="[67]"/g)).toHaveLength(2);
+
+    const drawing = textPart('xl/drawings/drawing1.xml');
+    expect(drawing).toContain('<xdr:from><xdr:col>6</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row>');
+    expect(drawing).toContain('<xdr:to><xdr:col>11</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>12</xdr:row>');
+    expect(drawing).toContain('<xdr:from><xdr:col>6</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>13</xdr:row>');
+    expect(drawing).toContain('<xdr:to><xdr:col>8</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>18</xdr:row>');
 
     for (const [path, original] of untouched) {
       expect(pkg.readPart(path), path).toEqual(original);
@@ -110,6 +116,53 @@ describe('expandDestination', () => {
     const worksheet = textPart('xl/worksheets/sheet2.xml');
     expect(worksheet).toContain('sqref="Z12:Z14"');
     expect(worksheet).toContain('<autoFilter ref="Z12:Z14"/>');
+  });
+
+  it('updates merged cells, hyperlinks, and conditional formatting with insertion semantics', async () => {
+    pkg.updatePart(
+      'xl/worksheets/sheet2.xml',
+      textPart('xl/worksheets/sheet2.xml')
+        .replace(
+          '<pageMargins',
+          '<mergeCells count="2"><mergeCell ref="A2:B4"/><mergeCell ref="Z10:AA12"/></mergeCells><hyperlinks><hyperlink ref="B4"/><hyperlink ref="Z10:Z12"/></hyperlinks><conditionalFormatting sqref="A2:A4 Z10:Z12"><cfRule type="expression" priority="1"><formula>A2&gt;0</formula></cfRule></conditionalFormatting><pageMargins',
+        ),
+    );
+
+    await expandDestination(pkg, {
+      worksheetPath: 'xl/worksheets/sheet2.xml',
+      destinationRange: 'A2:C4',
+      dataStartRow: 2,
+      templateRow: 4,
+      requiredDataRows: 5,
+    });
+
+    const worksheet = textPart('xl/worksheets/sheet2.xml');
+    expect(worksheet).toContain('<mergeCell ref="A2:B6"/>');
+    expect(worksheet).toContain('<mergeCell ref="Z12:AA14"/>');
+    expect(worksheet).toContain('<hyperlink ref="B4"/>');
+    expect(worksheet).toContain('<hyperlink ref="Z12:Z14"/>');
+    expect(worksheet).toContain('conditionalFormatting sqref="A2:A6 Z12:Z14"');
+  });
+
+  it('hard-blocks unsupported row-bearing extension geometry before mutation', async () => {
+    pkg.updatePart(
+      'xl/worksheets/sheet2.xml',
+      textPart('xl/worksheets/sheet2.xml').replace(
+        '<pageMargins',
+        '<extLst><ext uri="unsupported-row-geometry"><rowRef>10</rowRef></ext></extLst><pageMargins',
+      ),
+    );
+    const originalWorksheet = pkg.readPart('xl/worksheets/sheet2.xml');
+
+    await expect(expandDestination(pkg, {
+      worksheetPath: 'xl/worksheets/sheet2.xml',
+      destinationRange: 'A2:C4',
+      dataStartRow: 2,
+      templateRow: 4,
+      requiredDataRows: 5,
+    })).rejects.toThrow('Unsupported row-bearing worksheet geometry');
+
+    expect(pkg.readPart('xl/worksheets/sheet2.xml')).toEqual(originalWorksheet);
   });
 
   it('rejects a template row outside the confirmed destination model', async () => {
