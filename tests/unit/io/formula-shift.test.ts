@@ -23,6 +23,12 @@ describe('shiftFormulaA1', () => {
     ).toBe("=Sheet1!C5+'Sales 2024'!$B6+'O''Brien'!E$3");
   });
 
+  it('preserves structured table references while shifting ordinary references', () => {
+    expect(
+      shiftFormulaA1('=Table1[A1]+B2+Table1[[#Data],[C3]]', 1, 1),
+    ).toBe('=Table1[A1]+C3+Table1[[#Data],[C3]]');
+  });
+
   it('does not alter A1-like text inside Excel string literals', () => {
     expect(
       shiftFormulaA1('=IF(A1="A1 and B2",B2,"He said ""C3""")', 1, 1),
@@ -40,6 +46,8 @@ describe('shiftFormulaA1', () => {
     ['=A1', 0, -1, '=#REF!'],
     ['=SUM(A1:B2)', -1, 0, '=SUM(#REF!:B1)'],
     ['=Sheet1!A1', -1, 0, '=#REF!'],
+    ['=XFD1048576', 1, 1, '=#REF!'],
+    ['=XFC1048575', 1, 1, '=XFD1048576'],
   ])('emits #REF! when shifting %s below worksheet bounds', (
     formula,
     rowDelta,

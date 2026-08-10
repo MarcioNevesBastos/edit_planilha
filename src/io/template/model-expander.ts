@@ -108,7 +108,7 @@ function expandWorksheet(
     }
     const prefix = inserted ? '' : clones;
     inserted = true;
-    return prefix + shiftRow(row, additionalRows, false);
+    return prefix + shiftRow(row, additionalRows, true);
   }) + (inserted ? '' : clones);
 
   let result = worksheet.replace(
@@ -204,12 +204,9 @@ function updateValidationRanges(
   ) => {
     const ranges = String(sqref).trim().split(/\s+/).map((value) => {
       const range = parseRange(value);
-      if (!rangesOverlapColumns(range, destination)) {
-        return value;
-      }
-      return formatRange(expandRowsAtInsertion(
+      return formatRange(updateRangeAtInsertion(
         range,
-        destination.endRow,
+        destination,
         targetLastRow,
         additionalRows,
       ));
@@ -224,15 +221,36 @@ function expandStructuralRange(
   targetLastRow: number,
   additionalRows: number,
 ): CellRange {
-  if (!rangesOverlapColumns(range, destination)) {
-    return range;
-  }
-  return expandRowsAtInsertion(
+  return updateRangeAtInsertion(
     range,
-    destination.endRow,
+    destination,
     targetLastRow,
     additionalRows,
   );
+}
+
+function updateRangeAtInsertion(
+  range: CellRange,
+  destination: CellRange,
+  targetLastRow: number,
+  additionalRows: number,
+): CellRange {
+  if (rangesOverlapColumns(range, destination)) {
+    return expandRowsAtInsertion(
+      range,
+      destination.endRow,
+      targetLastRow,
+      additionalRows,
+    );
+  }
+  if (range.startRow > destination.endRow) {
+    return {
+      ...range,
+      startRow: range.startRow + additionalRows,
+      endRow: range.endRow + additionalRows,
+    };
+  }
+  return range;
 }
 
 function expandRowsAtInsertion(

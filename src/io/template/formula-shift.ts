@@ -24,11 +24,11 @@ function tokenizeFormula(formula: string): FormulaToken[] {
   while (cursor < formula.length) {
     const quote = formula.indexOf('"', cursor);
     if (quote < 0) {
-      tokens.push({ literal: false, value: formula.slice(cursor) });
+      tokens.push(...tokenizeFormulaSegment(formula.slice(cursor)));
       break;
     }
     if (quote > cursor) {
-      tokens.push({ literal: false, value: formula.slice(cursor, quote) });
+      tokens.push(...tokenizeFormulaSegment(formula.slice(cursor, quote)));
     }
 
     let end = quote + 1;
@@ -47,6 +47,48 @@ function tokenizeFormula(formula: string): FormulaToken[] {
   }
 
   return tokens;
+}
+
+function tokenizeFormulaSegment(segment: string): FormulaToken[] {
+  const tokens: FormulaToken[] = [];
+  const structuredReferenceStart = /(?:[A-Za-z_\\][A-Za-z0-9_.]*)?\[/g;
+  let cursor = 0;
+
+  let match: RegExpExecArray | null;
+  while ((match = structuredReferenceStart.exec(segment)) !== null) {
+    const start = match.index ?? 0;
+    const openingBracket = start + match[0].length - 1;
+    const closingBracket = findClosingBracket(segment, openingBracket);
+    if (closingBracket < 0) {
+      break;
+    }
+    if (start > cursor) {
+      tokens.push({ literal: false, value: segment.slice(cursor, start) });
+    }
+    tokens.push({ literal: true, value: segment.slice(start, closingBracket + 1) });
+    cursor = closingBracket + 1;
+    structuredReferenceStart.lastIndex = cursor;
+  }
+
+  if (cursor < segment.length) {
+    tokens.push({ literal: false, value: segment.slice(cursor) });
+  }
+  return tokens;
+}
+
+function findClosingBracket(value: string, openingBracket: number): number {
+  let depth = 0;
+  for (let index = openingBracket; index < value.length; index += 1) {
+    if (value[index] === '[') {
+      depth += 1;
+    } else if (value[index] === ']') {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return -1;
 }
 
 function shiftReferences(segment: string, rowDelta: number, colDelta: number): string {
