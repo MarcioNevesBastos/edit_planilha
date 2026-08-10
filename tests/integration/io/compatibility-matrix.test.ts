@@ -28,6 +28,9 @@ describe('tested OOXML compatibility matrix', () => {
     const output = await exportWorkbook(exportInput(source));
     const exported = await openOoxmlPackage(await output.arrayBuffer());
     const worksheet = textPart(exported, 'xl/worksheets/sheet1.xml');
+    const worksheetRelationships = textPart(exported, 'xl/worksheets/_rels/sheet1.xml.rels');
+    const drawing = textPart(exported, 'xl/drawings/drawing1.xml');
+    const drawingRelationships = textPart(exported, 'xl/drawings/_rels/drawing1.xml.rels');
     const table = textPart(exported, 'xl/tables/table1.xml');
 
     const matrix = [
@@ -58,12 +61,19 @@ describe('tested OOXML compatibility matrix', () => {
         feature: 'images',
         status: 'preserved',
         verified: samePart(source, exported, 'xl/media/image1.png')
-          && samePart(source, exported, 'xl/drawings/drawing1.xml'),
+          && samePart(source, exported, 'xl/drawings/drawing1.xml')
+          && worksheet.includes('<drawing r:id="rId2"/>')
+          && hasRelationship(worksheetRelationships, 'drawing', '../drawings/drawing1.xml')
+          && hasRelationship(drawingRelationships, 'image', '../media/image1.png'),
       },
       {
         feature: 'charts',
         status: 'preserved',
-        verified: samePart(source, exported, 'xl/charts/chart1.xml'),
+        verified: samePart(source, exported, 'xl/charts/chart1.xml')
+          && samePart(source, exported, 'xl/drawings/drawing1.xml')
+          && worksheet.includes('<drawing r:id="rId2"/>')
+          && hasRelationship(worksheetRelationships, 'drawing', '../drawings/drawing1.xml')
+          && hasRelationship(drawingRelationships, 'chart', '../charts/chart1.xml'),
       },
       {
         feature: 'tables',
@@ -193,6 +203,12 @@ function samePart(left: OoxmlPackage, right: OoxmlPackage, path: string): boolea
 
 function textPart(pkg: OoxmlPackage, path: string): string {
   return new TextDecoder().decode(pkg.readPart(path));
+}
+
+function hasRelationship(xml: string, type: string, target: string): boolean {
+  return new RegExp(
+    `<Relationship\\b[^>]*\\bType="[^"]+/${type}"[^>]*\\bTarget="${target}"`,
+  ).test(xml);
 }
 
 function toArrayBuffer(bytes: Buffer): ArrayBuffer {

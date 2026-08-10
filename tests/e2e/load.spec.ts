@@ -7,7 +7,7 @@ import {
 test.describe.configure({ timeout: 240_000 });
 
 for (const rowCount of LOAD_ROW_COUNTS) {
-  test(`${rowCount.toLocaleString('en-US')} rows remain progressive, cancellable, and virtualized`, async ({ page }, testInfo) => {
+  test(`${rowCount.toLocaleString('en-US')} row load workflow remains responsive and virtualized`, async ({ page }, testInfo) => {
     const timings: Record<string, number> = {};
 
     await page.goto('/app.html');
@@ -42,22 +42,18 @@ for (const rowCount of LOAD_ROW_COUNTS) {
     await page.getByLabel('Coluna principal').selectOption({ label: 'Produto' });
     await page.getByLabel('Valor').fill('Carga ');
 
-    if (rowCount === 100_000) {
-      await startHeartbeat(page);
-      await page.getByRole('button', { name: 'Adicionar transformação' }).click();
-      await expect(page.getByText('transform', { exact: true })).toBeVisible();
-      await expect.poll(() => heartbeatCount(page)).toBeGreaterThan(0);
-      await page.getByRole('button', { name: 'Cancelar' }).click();
-      await expect(page.locator('.operation-panel')).toBeHidden();
-      await expect(page.getByText('Nenhuma transformação adicionada.')).toBeVisible();
-      await stopHeartbeat(page);
-    }
+    await startHeartbeat(page);
+    await page.getByRole('button', { name: 'Adicionar transformação' }).click();
+    await assertHeartbeatContinuesDuringActiveOperation(page, 'transform');
+    await page.getByRole('button', { name: 'Cancelar' }).click();
+    await expect(page.locator('.operation-panel')).toBeHidden();
+    await expect(page.getByText('Nenhuma transformação adicionada.')).toBeVisible();
+    await stopHeartbeat(page);
 
     await startHeartbeat(page);
     timings.transformMs = await elapsed(async () => {
       await page.getByRole('button', { name: 'Adicionar transformação' }).click();
-      await expect(page.getByText('transform', { exact: true })).toBeVisible();
-      await expect.poll(() => heartbeatCount(page)).toBeGreaterThan(0);
+      await assertHeartbeatContinuesDuringActiveOperation(page, 'transform');
       await expect(page.getByRole('listitem').filter({ hasText: 'Adicionar prefixo' })).toBeVisible();
     });
     await stopHeartbeat(page);
@@ -66,8 +62,7 @@ for (const rowCount of LOAD_ROW_COUNTS) {
     await startHeartbeat(page);
     timings.validationMs = await elapsed(async () => {
       await page.getByRole('button', { name: 'Executar validação' }).click();
-      await expect(page.getByText('validate', { exact: true })).toBeVisible();
-      await expect.poll(() => heartbeatCount(page)).toBeGreaterThan(0);
+      await assertHeartbeatContinuesDuringActiveOperation(page, 'validate');
       await expect(page.getByText('Nenhum erro encontrado')).toBeVisible();
     });
     await stopHeartbeat(page);
@@ -117,6 +112,22 @@ async function heartbeatCount(page: import('@playwright/test').Page): Promise<nu
   return page.evaluate(() => (
     window as unknown as { __loadHeartbeat?: number }
   ).__loadHeartbeat ?? 0);
+}
+
+async function assertHeartbeatContinuesDuringActiveOperation(
+  page: import('@playwright/test').Page,
+  phase: string,
+): Promise<void> {
+  await expect(page.getByText(phase, { exact: true })).toBeVisible();
+  const progress = page.locator('.operation-panel progress');
+  await expect.poll(async () => Number(await progress.getAttribute('value'))).toBeGreaterThan(0);
+
+  const baseline = await heartbeatCount(page);
+  await page.waitForFunction(({ baseline: startingTicks }) => {
+    const operationPanel = document.querySelector('.operation-panel');
+    const ticks = (window as unknown as { __loadHeartbeat?: number }).__loadHeartbeat ?? 0;
+    return operationPanel !== null && ticks > startingTicks;
+  }, { baseline });
 }
 
 async function stopHeartbeat(page: import('@playwright/test').Page): Promise<void> {
