@@ -74,4 +74,46 @@ describe('suggestMappings', () => {
       status: 'review-required',
     }]);
   });
+
+  it('keeps empty normalized headers review-required instead of auto-accepting them', () => {
+    const suggestions = suggestMappings(
+      [column('source-empty__1', '   ', 0)],
+      [column('destination-empty__1', '', 0)],
+    );
+
+    expect(suggestions).toEqual([{
+      sourceColumnId: 'source-empty__1',
+      destinationColumnId: null,
+      confidence: 'low',
+      score: 0,
+      status: 'review-required',
+    }]);
+  });
+
+  it('keeps duplicate exact destination headers review-required and preserves input-order ties', () => {
+    const suggestions = suggestMappings(
+      [column('name__1', 'Name', 0)],
+      [column('name-a__1', 'Name', 0), column('name-b__1', 'Name', 1)],
+    );
+
+    expect(suggestions).toEqual([{
+      sourceColumnId: 'name__1',
+      destinationColumnId: 'name-a__1',
+      confidence: 'exact',
+      score: 1,
+      status: 'review-required',
+    }]);
+  });
+
+  it('keeps duplicate exact source headers review-required', () => {
+    const suggestions = suggestMappings(
+      [column('name-a__1', 'Name', 0), column('name-b__1', 'Name', 1)],
+      [column('name__1', 'Name', 0)],
+    );
+
+    expect(suggestions.map(({ destinationColumnId, confidence, status }) => ({ destinationColumnId, confidence, status }))).toEqual([
+      { destinationColumnId: 'name__1', confidence: 'exact', status: 'review-required' },
+      { destinationColumnId: 'name__1', confidence: 'exact', status: 'review-required' },
+    ]);
+  });
 });

@@ -58,6 +58,7 @@ function similarity(left: string, right: string): number {
 }
 
 function confidenceFor(score: number): MappingConfidence {
+  if (score === 1) return 'exact';
   if (score >= 0.85) return 'high';
   if (score >= MINIMUM_SUGGESTION_SCORE) return 'medium';
   return 'low';
@@ -67,14 +68,33 @@ export function suggestMappings(
   sourceColumns: readonly DatasetColumn[],
   destinationColumns: readonly DatasetColumn[],
 ): MappingSuggestion[] {
+  const sourceHeaderCounts = new Map<string, number>();
+  for (const sourceColumn of sourceColumns) {
+    const normalizedHeader = normalizeText(sourceColumn.header);
+    sourceHeaderCounts.set(normalizedHeader, (sourceHeaderCounts.get(normalizedHeader) ?? 0) + 1);
+  }
+
   return sourceColumns.map((sourceColumn) => {
     const normalizedSource = normalizeText(sourceColumn.header);
+    if (normalizedSource === '') {
+      return {
+        sourceColumnId: sourceColumn.id,
+        destinationColumnId: null,
+        confidence: 'low',
+        score: 0,
+        status: 'review-required',
+      };
+    }
+
     const candidates = destinationColumns.map((destinationColumn, index) => ({
       destinationColumn,
       index,
       normalizedHeader: normalizeText(destinationColumn.header),
     }));
-    const exact = candidates.find((candidate) => candidate.normalizedHeader === normalizedSource);
+    const exactCandidates = sourceHeaderCounts.get(normalizedSource) !== 1
+      ? []
+      : candidates.filter((candidate) => candidate.normalizedHeader === normalizedSource);
+    const exact = exactCandidates.length === 1 ? exactCandidates[0] : undefined;
 
     if (exact) {
       return {
