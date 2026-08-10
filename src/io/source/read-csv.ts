@@ -58,6 +58,13 @@ async function parseCsv(
   return new Promise((resolve, reject) => {
     const data: string[][] = [];
     const errors: Papa.ParseError[] = [];
+    let meta: Papa.ParseMeta = {
+      delimiter: options.delimiter ?? '',
+      linebreak: '',
+      aborted: false,
+      truncated: false,
+      cursor: 0,
+    };
 
     Papa.parse<string[]>(file, {
       delimiter: options.delimiter,
@@ -67,8 +74,9 @@ async function parseCsv(
       chunk: (result) => {
         data.push(...result.data);
         errors.push(...result.errors);
+        meta = result.meta;
       },
-      complete: () => resolve({ data, errors, meta: {} }),
+      complete: () => resolve({ data, errors, meta }),
       error: (error) => reject(new SourceReadError([{
         code: 'CsvReadFailure',
         message: error.message,

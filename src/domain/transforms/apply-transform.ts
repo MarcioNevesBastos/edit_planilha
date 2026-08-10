@@ -213,7 +213,8 @@ export function applyTransform(dataset: Dataset, command: TransformCommand): Dat
       let columns = dataset.columns;
       command.newColumns.forEach((column, index) => { columns = appendColumn(copyDataset(dataset, columns), column, sourceIndex + index + 1); });
       return copyDataset(dataset, columns, dataset.rows.map((row) => {
-        const parts = typeof row.values[command.columnId] === 'string' ? row.values[command.columnId].split(command.delimiter) : [];
+        const sourceValue = row.values[command.columnId];
+        const parts = typeof sourceValue === 'string' ? sourceValue.split(command.delimiter) : [];
         return { ...row, values: { ...row.values, ...Object.fromEntries(command.newColumns.map((column, index) => [column.id, parts[index] || null])) } };
       }));
     }

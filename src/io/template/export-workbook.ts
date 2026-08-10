@@ -804,7 +804,7 @@ function shiftRow(row: string, rowDelta: number): string {
   ));
 }
 
-function cellXml(reference: string, value: CellValue | undefined, model?: string): string {
+function cellXml(reference: string, value: CellValue | undefined, model?: string | null): string {
   const preservedAttributes = model
     ? attributes(model).filter(({ name }) => name !== 'r' && name !== 't')
     : [];
