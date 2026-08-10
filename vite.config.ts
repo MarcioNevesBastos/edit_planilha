@@ -1,6 +1,11 @@
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
+
+export function loadExtensionManifest(): string {
+  return readFileSync(resolve(__dirname, 'src/extension/manifest.json'), 'utf8');
+}
 
 function emitManifest(): Plugin {
   return {
@@ -9,17 +14,7 @@ function emitManifest(): Plugin {
       this.emitFile({
         type: 'asset',
         fileName: 'manifest.json',
-        source: JSON.stringify({
-          manifest_version: 3,
-          name: 'Chrome Excel Transformer',
-          version: '0.1.0',
-          action: {
-            default_title: 'Abrir Chrome Excel Transformer',
-          },
-          background: {
-            service_worker: 'service-worker.js',
-          },
-        }, null, 2),
+        source: loadExtensionManifest(),
       });
     },
   };
