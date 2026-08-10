@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Chrome Excel Transformer",
+  "version": "0.1.0",
+  "action": {
+    "default_title": "Abrir Chrome Excel Transformer"
+  },
+  "background": {
+    "service_worker": "service-worker.js"
+  }
+}
