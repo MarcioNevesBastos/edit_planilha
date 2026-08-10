@@ -1,8 +1,1312 @@
-export function App() {
+import * as XLSX from 'xlsx';
+import React from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
+import type { Dataset, DatasetColumn } from '../domain/dataset/types';
+import { makeColumnId } from '../domain/dataset/column-id';
+import { suggestMappings } from '../domain/mapping/suggest-mappings';
+import type { WriteMode, WritePlan } from '../domain/merge/types';
+import type { TransformCommand } from '../domain/transforms/types';
+import { validateDataset, validateRow } from '../domain/validation/validate-row';
+import type { ValidationIssue, ValidationResult, ValidationRule } from '../domain/validation/types';
+import { detectDestination, type DestinationCandidate } from '../io/template/destination-detector';
+import type { ExportDestination } from '../io/template/export-workbook';
+import { openOoxmlPackage } from '../io/template/ooxml-package';
+import { indexWorkbook, type WorkbookIndex } from '../io/template/workbook-index';
+import { listSourceSheets } from '../io/source/read-source';
+import {
+  transferablesForRequest,
+  type WorkerInboundMessage,
+  type WorkerRequest,
+  type WorkerResponse,
+  type WorkerResult,
+} from '../workers/protocol';
+import { DataGrid } from './components/DataGrid';
+import { ExportSummary } from './components/ExportSummary';
+import { FileDrop } from './components/FileDrop';
+import {
+  MappingGrid,
+  type ReviewedMapping,
+} from './components/MappingGrid';
+import { Stepper, type WorkflowStepDefinition } from './components/Stepper';
+import { ValidationPanel } from './components/ValidationPanel';
+import { createSessionStore, type FileMetadata } from './state/session-store';
+
+const STEPS = [
+  { id: 'source', label: 'Origem' },
+  { id: 'template', label: 'Modelo' },
+  { id: 'destination', label: 'Destino' },
+  { id: 'mapping', label: 'Mapeamento' },
+  { id: 'transforms', label: 'Transformações' },
+  { id: 'validation', label: 'Validação' },
+  { id: 'preview', label: 'Prévia' },
+  { id: 'write', label: 'Modo de gravação' },
+  { id: 'summary', label: 'Resumo' },
+  { id: 'export', label: 'Exportar' },
+] as const satisfies readonly WorkflowStepDefinition[];
+
+const STEP_DESCRIPTIONS = [
+  'Importe a planilha que contém os dados a preparar.',
+  'Escolha o arquivo modelo sem alterar o original.',
+  'Confirme a aba e a faixa que receberão os dados.',
+  'Revise cada sugestão antes de continuar.',
+  'Monte uma sequência reproduzível de ajustes.',
+  'Revise regras detectadas, adicione regras e corrija erros.',
+  'Confira os dados finais e edite células pontualmente.',
+  'Defina como os registros serão gravados no modelo.',
+  'Confira as contagens exatas antes da exportação.',
+  'Gere uma nova planilha .xlsx localmente.',
+] as const;
+
+const TRANSFORM_LABELS: Record<TransformCommand['type'], string> = {
+  reorderColumns: 'Reordenar colunas',
+  sort: 'Ordenar',
+  filter: 'Filtrar',
+  removeEmptyRows: 'Remover linhas vazias',
+  deduplicate: 'Remover duplicados',
+  renameHeader: 'Renomear cabeçalho',
+  splitColumn: 'Dividir coluna',
+  combineColumns: 'Combinar colunas',
+  findReplace: 'Localizar e substituir',
+  dateConversion: 'Converter data',
+  numberConversion: 'Converter número',
+  currencyConversion: 'Converter moeda',
+  prefix: 'Prefixo',
+  suffix: 'Sufixo',
+  fixedValue: 'Valor fixo',
+  calculatedColumn: 'Coluna calculada',
+  conditionalRule: 'Regra condicional',
+  editCell: 'Edição direta',
+};
+
+export interface WorkflowWorker {
+  onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null;
+  postMessage(message: WorkerInboundMessage, transfer?: Transferable[]): void;
+  terminate(): void;
+}
+
+interface AppProps {
+  workerFactory?: () => WorkflowWorker;
+}
+
+interface ActiveOperation {
+  operationId: string;
+  label: string;
+  completed: number;
+  total: number;
+  phase: string;
+}
+
+interface PendingOperation {
+  onResult(result: WorkerResult): void;
+  onCancelled?(): void;
+  onError?(message: string): void;
+}
+
+interface CommandHistory {
+  past: TransformCommand[][];
+  future: TransformCommand[][];
+}
+
+function defaultWorkerFactory(): WorkflowWorker {
+  return new Worker(new URL('../workers/data-worker.ts', import.meta.url), {
+    type: 'module',
+  }) as unknown as WorkflowWorker;
+}
+
+function metadata(file: File): FileMetadata {
+  return {
+    name: file.name,
+    size: file.size,
+    type: file.type,
+    lastModified: file.lastModified,
+  };
+}
+
+function extension(name: string): string {
+  return name.split('.').pop()?.toLowerCase() ?? '';
+}
+
+function columnType(values: unknown[]): DatasetColumn['detectedType'] {
+  const types = new Set(values.flatMap((value) => {
+    if (value === null || value === undefined || value === '') return [];
+    if (typeof value === 'number') return ['number' as const];
+    if (typeof value === 'boolean') return ['boolean' as const];
+    return ['string' as const];
+  }));
+  return types.size === 0 ? 'empty' : types.size === 1 ? [...types][0] : 'mixed';
+}
+
+function destinationDataset(
+  buffer: ArrayBuffer,
+  sheetName: string,
+  rangeReference: string,
+): Dataset {
+  const workbook = XLSX.read(buffer, { type: 'array', cellDates: false, cellText: true });
+  const worksheet = workbook.Sheets[sheetName];
+  if (!worksheet) throw new Error(`Aba do modelo não encontrada: ${sheetName}`);
+  const range = XLSX.utils.decode_range(rangeReference.replace(/\$/g, ''));
+  const headers = Array.from({ length: range.e.c - range.s.c + 1 }, (_, offset) => {
+    const cell = worksheet[XLSX.utils.encode_cell({ r: range.s.r, c: range.s.c + offset })];
+    return cell?.w ?? String(cell?.v ?? `Coluna ${XLSX.utils.encode_col(range.s.c + offset)}`);
+  });
+  const rawRows = Array.from({ length: Math.max(0, range.e.r - range.s.r) }, (_, rowOffset) => {
+    const worksheetRow = range.s.r + rowOffset + 1;
+    return Array.from({ length: headers.length }, (_, columnOffset) => {
+      const cell = worksheet[XLSX.utils.encode_cell({ r: worksheetRow, c: range.s.c + columnOffset })];
+      if (!cell || cell.v === undefined || cell.v === null) return null;
+      if (cell.t === 'n') return cell.v as number;
+      if (cell.t === 'b') return Boolean(cell.v);
+      return cell.w ?? String(cell.v);
+    });
+  });
+  const columns = headers.map((header, index) => ({
+    id: makeColumnId(header, index),
+    header,
+    sourceIndex: range.s.c + index,
+    detectedType: columnType(rawRows.map((row) => row[index])),
+  }));
+  const rows = rawRows
+    .map((values, index) => ({ values, sourceRowNumber: range.s.r + index + 2 }))
+    .filter(({ values }) => values.some((value) => value !== null && value !== ''))
+    .map(({ values, sourceRowNumber }) => {
+      const record = Object.fromEntries(columns.map((column, index) => [column.id, values[index]]));
+      return {
+        rowId: `template-${sourceRowNumber}`,
+        sourceRowNumber,
+        values: record,
+        originalValues: { ...record },
+      };
+    });
+  return { columns, rows };
+}
+
+function rangeRows(reference: string): { headerRow: number; dataStartRow: number; templateRow: number } {
+  const range = XLSX.utils.decode_range(reference.replace(/\$/g, ''));
+  return {
+    headerRow: range.s.r + 1,
+    dataStartRow: range.s.r + 2,
+    templateRow: Math.max(range.s.r + 2, range.e.r + 1),
+  };
+}
+
+function detectedValidationRules(
+  sourceColumns: readonly DatasetColumn[],
+  templateColumns: readonly DatasetColumn[],
+  mappings: readonly ReviewedMapping[],
+): ValidationRule[] {
+  return mappings.flatMap((mapping) => {
+    if (mapping.destinationColumnId === null || mapping.action === 'ignore') return [];
+    const source = sourceColumns.find(({ id }) => id === mapping.sourceColumnId);
+    const destination = templateColumns.find(({ id }) => id === mapping.destinationColumnId);
+    if (!source || !destination || destination.detectedType === 'mixed' || destination.detectedType === 'empty') return [];
+    const valueType = destination.detectedType === 'date' ? 'date' : destination.detectedType;
+    return [{ type: 'type' as const, columnId: source.id, valueType }];
+  });
+}
+
+function acceptedMappings(mappings: readonly ReviewedMapping[]) {
+  return mappings.map(({ action, fixedValue, ...mapping }) => ({
+    ...mapping,
+    destinationColumnId: action === 'ignore' ? null : mapping.destinationColumnId,
+    status: 'accepted' as const,
+  }));
+}
+
+function fixedMappingCommands(
+  mappings: readonly ReviewedMapping[],
+): Array<Extract<TransformCommand, { type: 'fixedValue' }>> {
+  return mappings.flatMap((mapping) => mapping.action === 'fixed' && mapping.fixedValue !== undefined
+    ? [{ type: 'fixedValue' as const, columnId: mapping.sourceColumnId, value: mapping.fixedValue }]
+    : []);
+}
+
+function mapExistingForPlanning(
+  existing: Dataset,
+  source: Dataset,
+  mappings: readonly ReviewedMapping[],
+): Dataset {
+  const mapped = mappings.filter((mapping) => mapping.action !== 'ignore' && mapping.destinationColumnId);
+  return {
+    columns: source.columns,
+    rows: existing.rows.map((row) => ({
+      ...row,
+      values: Object.fromEntries(source.columns.map((column) => {
+        const mapping = mapped.find(({ sourceColumnId }) => sourceColumnId === column.id);
+        return [column.id, mapping?.destinationColumnId ? row.values[mapping.destinationColumnId] ?? null : null];
+      })),
+      originalValues: { ...row.originalValues },
+    })),
+  };
+}
+
+function destinationForExport(
+  candidate: DestinationCandidate,
+  dataset: Dataset,
+  index: WorkbookIndex,
+): ExportDestination {
+  const rows = rangeRows(candidate.range);
+  const tablePath = candidate.kind === 'table'
+    ? index.sheets.find(({ name }) => name === candidate.sheetName)?.tables
+      .find(({ displayName }) => displayName === candidate.tableName)?.path
+    : undefined;
+  return {
+    sheetName: candidate.sheetName,
+    range: candidate.range,
+    dataStartRow: rows.dataStartRow,
+    templateRow: rows.templateRow,
+    ...(tablePath ? { tablePath } : {}),
+    ...(candidate.kind === 'named-range' ? { definedName: candidate.definedName } : {}),
+    columns: dataset.columns.map((column) => ({
+      id: column.id,
+      column: XLSX.utils.encode_col(column.sourceIndex),
+    })),
+  };
+}
+
+export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
+  const workerFactoryRef = useRef(workerFactory);
+  const [store] = useState(createSessionStore);
+  const session = useSyncExternalStore(store.subscribe, store.getState, store.getState);
+  const [stepIndex, setStepIndex] = useState(0);
+  const [highestVisited, setHighestVisited] = useState(0);
+  const [baseDataset, setBaseDataset] = useState<Dataset | null>(null);
+  const [pendingSourceFile, setPendingSourceFile] = useState<File | null>(null);
+  const [sourceSheets, setSourceSheets] = useState<string[]>([]);
+  const [templateIndex, setTemplateIndex] = useState<WorkbookIndex | null>(null);
+  const [destinationCandidates, setDestinationCandidates] = useState<DestinationCandidate[]>([]);
+  const [selectedDestination, setSelectedDestination] = useState<DestinationCandidate | null>(null);
+  const [templateDataset, setTemplateDataset] = useState<Dataset | null>(null);
+  const [writeMode, setWriteMode] = useState<WriteMode>('replace');
+  const [keyColumnIds, setKeyColumnIds] = useState<string[]>([]);
+  const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
+  const [writePlan, setWritePlan] = useState<WritePlan | null>(null);
+  const [focusTarget, setFocusTarget] = useState<{ rowId: string; columnId: string } | null>(null);
+  const [activeOperation, setActiveOperation] = useState<ActiveOperation | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [exported, setExported] = useState(false);
+  const workerRef = useRef<WorkflowWorker | null>(null);
+  const pendingOperationRef = useRef<PendingOperation | null>(null);
+  const operationCounter = useRef(0);
+  const commandHistory = useRef<CommandHistory>({ past: [], future: [] });
+
+  const mappings = session.mappings as ReviewedMapping[];
+  const commands = session.transforms as TransformCommand[];
+  const userRules = session.validationRules as ValidationRule[];
+  const detectedRules = useMemo(() => session.dataset && templateDataset
+    ? detectedValidationRules(session.dataset.columns, templateDataset.columns, mappings)
+    : [], [mappings, session.dataset, templateDataset]);
+
+  useEffect(() => {
+    const worker = workerFactoryRef.current();
+    workerRef.current = worker;
+    worker.onmessage = ({ data }) => {
+      const pending = pendingOperationRef.current;
+      setActiveOperation((current) => {
+        if (!current || current.operationId !== data.operationId) return current;
+        if (data.type === 'PROGRESS') {
+          return { ...current, completed: data.completed, total: data.total, phase: data.phase };
+        }
+        return null;
+      });
+      if (!pending) return;
+      if (data.type === 'RESULT') {
+        pendingOperationRef.current = null;
+        pending.onResult(data.result);
+      } else if (data.type === 'CANCELLED') {
+        pendingOperationRef.current = null;
+        pending.onCancelled?.();
+      } else if (data.type === 'ERROR') {
+        pendingOperationRef.current = null;
+        setError(data.message);
+        pending.onError?.(data.message);
+      }
+    };
+    return () => {
+      worker.terminate();
+      if (workerRef.current === worker) workerRef.current = null;
+    };
+  }, []);
+
+  const runOperation = useCallback((
+    request: WorkerRequest,
+    label: string,
+    pending: PendingOperation,
+  ) => {
+    const worker = workerRef.current;
+    if (!worker) {
+      setError('Worker de processamento indisponível.');
+      return;
+    }
+    setError(null);
+    pendingOperationRef.current = pending;
+    setActiveOperation({
+      operationId: request.operationId,
+      label,
+      completed: 0,
+      total: 0,
+      phase: '',
+    });
+    worker.postMessage(request, transferablesForRequest(request));
+  }, []);
+
+  const operationId = useCallback((prefix: string) => `${prefix}-${++operationCounter.current}`, []);
+
+  const invalidateAfterSource = useCallback(() => {
+    store.setState({ mappings: [], transforms: [], validationRules: [] });
+    commandHistory.current = { past: [], future: [] };
+    setValidationResult(null);
+    setWritePlan(null);
+    setExported(false);
+    setKeyColumnIds([]);
+  }, [store]);
+
+  const importSourceFile = useCallback(async (file: File, sheetName?: string) => {
+    const stableBuffer = await file.arrayBuffer();
+    const requestBuffer = stableBuffer.slice(0);
+    const id = operationId('source');
+    runOperation({
+      type: 'IMPORT_SOURCE',
+      operationId: id,
+      source: { name: file.name, buffer: requestBuffer, mediaType: file.type },
+      options: sheetName ? { sheetName } : undefined,
+    }, 'Importando origem', {
+      onResult: (result) => {
+        if (result.type !== 'IMPORT_SOURCE') return;
+        invalidateAfterSource();
+        const refreshedMappings: ReviewedMapping[] = templateDataset
+          ? suggestMappings(result.dataset.columns, templateDataset.columns)
+            .map((mapping) => ({ ...mapping, action: 'map' }))
+          : [];
+        setBaseDataset(result.dataset);
+        setPendingSourceFile(null);
+        setSourceSheets([]);
+        store.setState({
+          sourceFileMetadata: metadata(file),
+          sourceFileBuffer: stableBuffer,
+          selectedSheets: { ...store.getState().selectedSheets, source: sheetName ?? null },
+          dataset: result.dataset,
+          mappings: refreshedMappings,
+        });
+      },
+    });
+  }, [invalidateAfterSource, operationId, runOperation, store, templateDataset]);
+
+  const selectSourceFile = useCallback(async (file: File) => {
+    if (!['csv', 'xlsx'].includes(extension(file.name))) {
+      setError('A origem deve ser um arquivo .xlsx ou .csv.');
+      return;
+    }
+    if (extension(file.name) === 'csv') {
+      await importSourceFile(file);
+      return;
+    }
+    try {
+      const sheets = await listSourceSheets(file);
+      setPendingSourceFile(file);
+      setSourceSheets(sheets);
+      if (sheets.length === 1) await importSourceFile(file, sheets[0]);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }, [importSourceFile]);
+
+  const selectTemplateFile = useCallback(async (file: File) => {
+    if (extension(file.name) !== 'xlsx') {
+      setError('O modelo deve ser um arquivo .xlsx.');
+      return;
+    }
+    try {
+      setError(null);
+      const buffer = await file.arrayBuffer();
+      const index = await indexWorkbook(await openOoxmlPackage(buffer.slice(0)));
+      setTemplateIndex(index);
+      setDestinationCandidates([]);
+      setSelectedDestination(null);
+      setTemplateDataset(null);
+      setValidationResult(null);
+      setWritePlan(null);
+      setExported(false);
+      store.setState({
+        templateMetadata: metadata(file),
+        templateFileBuffer: buffer,
+        selectedSheets: { ...store.getState().selectedSheets, template: null },
+        mappings: [],
+        validationRules: [],
+      });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }, [store]);
+
+  const selectTemplateSheet = useCallback((sheetName: string) => {
+    if (!templateIndex) return;
+    setDestinationCandidates(detectDestination(templateIndex, sheetName));
+    setSelectedDestination(null);
+    setTemplateDataset(null);
+    setValidationResult(null);
+    setWritePlan(null);
+    setExported(false);
+    store.setState({
+      selectedSheets: { ...store.getState().selectedSheets, template: sheetName },
+      mappings: [],
+      validationRules: [],
+    });
+  }, [store, templateIndex]);
+
+  const selectDestination = useCallback((candidate: DestinationCandidate) => {
+    if (!session.templateFileBuffer || !session.dataset) return;
+    try {
+      const modelDataset = destinationDataset(
+        session.templateFileBuffer,
+        candidate.sheetName,
+        candidate.range,
+      );
+      const suggestions: ReviewedMapping[] = suggestMappings(
+        session.dataset.columns,
+        modelDataset.columns,
+      ).map((mapping) => ({ ...mapping, action: 'map' }));
+      setSelectedDestination(candidate);
+      setTemplateDataset(modelDataset);
+      setValidationResult(null);
+      setWritePlan(null);
+      setExported(false);
+      store.setState({ mappings: suggestions, validationRules: [] });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }, [session.dataset, session.templateFileBuffer, store]);
+
+  const commitCommandSet = useCallback((
+    nextCommands: TransformCommand[],
+    historyUpdate: () => void,
+    after?: (dataset: Dataset) => void,
+  ) => {
+    if (!baseDataset) return;
+    const id = operationId('transform');
+    runOperation({
+      type: 'APPLY_TRANSFORMS',
+      operationId: id,
+      dataset: baseDataset,
+      commands: nextCommands,
+    }, 'Aplicando transformações', {
+      onResult: (result) => {
+        if (result.type !== 'APPLY_TRANSFORMS') return;
+        historyUpdate();
+        store.setState({ transforms: nextCommands, dataset: result.dataset });
+        setValidationResult(null);
+        setWritePlan(null);
+        setExported(false);
+        after?.(result.dataset);
+      },
+    });
+  }, [baseDataset, operationId, runOperation, store]);
+
+  const replaceCommands = useCallback((nextCommands: TransformCommand[]) => {
+    const previous = [...commands];
+    commitCommandSet(nextCommands, () => {
+      commandHistory.current.past.push(previous);
+      commandHistory.current.future = [];
+    });
+  }, [commands, commitCommandSet]);
+
+  const undoCommands = useCallback(() => {
+    const target = commandHistory.current.past.at(-1);
+    if (!target) return;
+    const current = [...commands];
+    commitCommandSet(target, () => {
+      commandHistory.current.past.pop();
+      commandHistory.current.future.push(current);
+    });
+  }, [commands, commitCommandSet]);
+
+  const redoCommands = useCallback(() => {
+    const target = commandHistory.current.future.at(-1);
+    if (!target) return;
+    const current = [...commands];
+    commitCommandSet(target, () => {
+      commandHistory.current.future.pop();
+      commandHistory.current.past.push(current);
+    });
+  }, [commands, commitCommandSet]);
+
+  const revalidateCorrection = useCallback((dataset: Dataset, command: Extract<TransformCommand, { type: 'editCell' }>) => {
+    if (!validationResult) return;
+    const rules = [...detectedRules, ...userRules];
+    const uniquenessRules = rules.filter((rule) => rule.type === 'unique' || rule.type === 'compositeUnique');
+    const localRules = rules.filter((rule) => rule.type !== 'unique' && rule.type !== 'compositeUnique');
+    const editedRow = dataset.rows.find(({ rowId }) => rowId === command.rowId);
+    const preserved = validationResult.issues.filter((issue) => (
+      issue.rowId !== command.rowId
+      && !uniquenessRules.some((rule) => rule.type === 'unique'
+        ? rule.columnId === issue.columnId
+        : rule.columnIds.includes(issue.columnId))
+    ));
+    const nextIssues = [
+      ...preserved,
+      ...(editedRow ? validateRow(editedRow, localRules) : []),
+      ...validateDataset(dataset, uniquenessRules).issues,
+    ];
+    setValidationResult({ isValid: nextIssues.length === 0, issues: nextIssues });
+  }, [detectedRules, userRules, validationResult]);
+
+  const editCell = useCallback((command: Extract<TransformCommand, { type: 'editCell' }>) => {
+    const previous = [...commands];
+    const next = [...commands, command];
+    commitCommandSet(next, () => {
+      commandHistory.current.past.push(previous);
+      commandHistory.current.future = [];
+    }, (dataset) => revalidateCorrection(dataset, command));
+  }, [commands, commitCommandSet, revalidateCorrection]);
+
+  const runValidation = useCallback(() => {
+    if (!session.dataset) return;
+    const id = operationId('validation');
+    runOperation({
+      type: 'VALIDATE',
+      operationId: id,
+      dataset: session.dataset,
+      rules: [...detectedRules, ...userRules],
+    }, 'Validando dados', {
+      onResult: (result) => {
+        if (result.type !== 'VALIDATE') return;
+        setValidationResult(result.validationResult);
+        setWritePlan(null);
+        setExported(false);
+      },
+    });
+  }, [detectedRules, operationId, runOperation, session.dataset, userRules]);
+
+  const runWritePlan = useCallback(() => {
+    if (!session.dataset || !templateDataset || !selectedDestination) return;
+    const fixedCommands = fixedMappingCommands(mappings);
+    const incoming = fixedCommands.length === 0
+      ? session.dataset
+      : fixedCommands.reduce((dataset, command) => {
+        const column = dataset.columns.find(({ id }) => id === command.columnId);
+        if (!column) return dataset;
+        return {
+          ...dataset,
+          rows: dataset.rows.map((row) => ({
+            ...row,
+            values: { ...row.values, [command.columnId]: command.type === 'fixedValue' ? command.value : row.values[command.columnId] },
+          })),
+        };
+      }, session.dataset);
+    const rows = rangeRows(selectedDestination.range);
+    const id = operationId('plan');
+    runOperation({
+      type: 'PLAN_WRITE',
+      operationId: id,
+      input: {
+        mode: writeMode,
+        incoming,
+        existing: mapExistingForPlanning(templateDataset, incoming, mappings),
+        destination: { headerRow: rows.headerRow, dataStartRow: rows.dataStartRow },
+        ...(writeMode === 'update' ? { keyColumnIds } : {}),
+      },
+    }, 'Calculando resumo', {
+      onResult: (result) => {
+        if (result.type !== 'PLAN_WRITE') return;
+        setWritePlan(result.writePlan);
+        setExported(false);
+        setStepIndex(8);
+        setHighestVisited((current) => Math.max(current, 8));
+      },
+    });
+  }, [keyColumnIds, mappings, operationId, runOperation, selectedDestination, session.dataset, templateDataset, writeMode]);
+
+  const exportWorkbook = useCallback(() => {
+    if (!writePlan || !validationResult || !selectedDestination || !templateDataset || !templateIndex || !session.templateFileBuffer) return;
+    const id = operationId('export');
+    runOperation({
+      type: 'EXPORT',
+      operationId: id,
+      templateBuffer: session.templateFileBuffer.slice(0),
+      input: {
+        destination: destinationForExport(selectedDestination, templateDataset, templateIndex),
+        mappings: acceptedMappings(mappings),
+        writePlan,
+        validationResult,
+        rejectedRows: validationResult.issues.map((issue) => ({
+          sourceRowNumber: issue.sourceRowNumber,
+          originalRelevantFields: session.dataset?.rows.find(({ rowId }) => rowId === issue.rowId)?.originalValues ?? {},
+          errorField: session.dataset?.columns.find(({ id: columnId }) => columnId === issue.columnId)?.header ?? issue.columnId,
+          invalidValue: issue.value,
+          rejectionReason: issue.message,
+          failedRuleOrTransform: issue.code,
+        })),
+      },
+    }, 'Exportando planilha', {
+      onResult: (result) => {
+        if (result.type !== 'EXPORT') return;
+        const blob = new Blob([result.buffer], {
+          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = 'planilha-preparada.xlsx';
+        anchor.click();
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+        setExported(true);
+      },
+    });
+  }, [mappings, operationId, runOperation, selectedDestination, session.dataset, session.templateFileBuffer, templateDataset, templateIndex, validationResult, writePlan]);
+
+  const canAdvance = useMemo(() => {
+    switch (stepIndex) {
+      case 0: return session.dataset !== null;
+      case 1: return session.templateFileBuffer !== null && session.selectedSheets.template !== null;
+      case 2: return selectedDestination !== null;
+      case 3: return mappings.length > 0 && mappings.every(({ status }) => status === 'accepted');
+      case 4: return true;
+      case 5: return validationResult !== null;
+      case 6: return true;
+      case 7: return writeMode !== 'update' || keyColumnIds.length > 0;
+      case 8: return writePlan !== null;
+      default: return false;
+    }
+  }, [keyColumnIds.length, mappings, selectedDestination, session.dataset, session.selectedSheets.template, session.templateFileBuffer, stepIndex, validationResult, writeMode, writePlan]);
+
+  const advance = () => {
+    if (!canAdvance || activeOperation) return;
+    if (stepIndex === 7) {
+      runWritePlan();
+      return;
+    }
+    const next = Math.min(STEPS.length - 1, stepIndex + 1);
+    setStepIndex(next);
+    setHighestVisited((current) => Math.max(current, next));
+  };
+
+  const cancelOperation = () => {
+    if (!activeOperation) return;
+    workerRef.current?.postMessage({
+      type: 'CANCEL_OPERATION',
+      operationId: activeOperation.operationId,
+    });
+  };
+
   return (
-    <main>
-      <h1>Preparar planilha</h1>
-      <div id="workflow" />
+    <main className="app-shell">
+      <style>{APP_STYLES}</style>
+      <header className="app-header">
+        <div className="brand-mark" aria-hidden="true">X</div>
+        <div>
+          <p>Transformador local</p>
+          <h1>Preparar planilha</h1>
+        </div>
+        <button
+          type="button"
+          className="text-button"
+          disabled={activeOperation !== null}
+          onClick={() => {
+            store.resetSession();
+            setStepIndex(0);
+            setHighestVisited(0);
+            setBaseDataset(null);
+            setPendingSourceFile(null);
+            setSourceSheets([]);
+            setTemplateIndex(null);
+            setDestinationCandidates([]);
+            setSelectedDestination(null);
+            setTemplateDataset(null);
+            setValidationResult(null);
+            setWritePlan(null);
+            setExported(false);
+            commandHistory.current = { past: [], future: [] };
+          }}
+        >
+          Nova sessão
+        </button>
+      </header>
+
+      <Stepper
+        steps={STEPS}
+        currentIndex={stepIndex}
+        highestVisitedIndex={highestVisited}
+        disabled={activeOperation !== null}
+        onSelect={setStepIndex}
+      />
+
+      <section className="workflow-card" id="workflow">
+        <div className="step-heading">
+          <span>Etapa {stepIndex + 1} de {STEPS.length}</span>
+          <h2>{STEPS[stepIndex].label}</h2>
+          <p>{STEP_DESCRIPTIONS[stepIndex]}</p>
+        </div>
+
+        {error ? <div className="error-banner" role="alert">{error}</div> : null}
+
+        {activeOperation ? (
+          <div className="operation-panel" aria-live="polite">
+            <div>
+              <strong>{activeOperation.label}</strong>
+              <span>{activeOperation.phase || 'preparando'}</span>
+            </div>
+            <progress value={activeOperation.completed} max={Math.max(1, activeOperation.total)} />
+            <span>{activeOperation.total === 0 ? '0%' : `${Math.round(activeOperation.completed / activeOperation.total * 100)}%`}</span>
+            <button type="button" onClick={cancelOperation}>Cancelar</button>
+          </div>
+        ) : null}
+
+        <div className="step-content">
+          {stepIndex === 0 ? (
+            <>
+              <FileDrop
+                accept=".xlsx,.csv"
+                actionLabel="Selecionar arquivo de origem"
+                description="Formatos aceitos: .xlsx e .csv"
+                fileName={pendingSourceFile?.name ?? session.sourceFileMetadata?.name}
+                disabled={activeOperation !== null}
+                onSelect={(file) => void selectSourceFile(file)}
+              />
+              {pendingSourceFile && sourceSheets.length > 1 ? (
+                <label className="field">Aba de origem
+                  <select
+                    defaultValue=""
+                    disabled={activeOperation !== null}
+                    onChange={(event) => void importSourceFile(pendingSourceFile, event.currentTarget.value)}
+                  >
+                    <option value="" disabled>Selecione uma aba</option>
+                    {sourceSheets.map((sheet) => <option value={sheet} key={sheet}>{sheet}</option>)}
+                  </select>
+                </label>
+              ) : null}
+              {session.dataset ? <DatasetFacts dataset={session.dataset} /> : null}
+            </>
+          ) : null}
+
+          {stepIndex === 1 ? (
+            <>
+              <FileDrop
+                accept=".xlsx"
+                actionLabel="Selecionar arquivo modelo"
+                description="O arquivo original permanecerá intacto. Formato aceito: .xlsx"
+                fileName={session.templateMetadata?.name}
+                disabled={activeOperation !== null}
+                onSelect={(file) => void selectTemplateFile(file)}
+              />
+              {templateIndex ? (
+                <label className="field">Aba do modelo
+                  <select
+                    value={session.selectedSheets.template ?? ''}
+                    disabled={activeOperation !== null}
+                    onChange={(event) => selectTemplateSheet(event.currentTarget.value)}
+                  >
+                    <option value="" disabled>Selecione uma aba</option>
+                    {templateIndex.sheets.map((sheet) => <option value={sheet.name} key={sheet.name}>{sheet.name}</option>)}
+                  </select>
+                </label>
+              ) : null}
+              {session.selectedSheets.template ? <p className="selection-note">{session.selectedSheets.template} selecionada</p> : null}
+            </>
+          ) : null}
+
+          {stepIndex === 2 ? (
+            <div className="candidate-list">
+              {destinationCandidates.map((candidate, index) => (
+                <label key={`${candidate.kind}-${candidate.range}`} data-selected={selectedDestination === candidate || undefined}>
+                  <input
+                    type="radio"
+                    name="destination"
+                    checked={selectedDestination === candidate}
+                    onChange={() => selectDestination(candidate)}
+                  />
+                  <span>
+                    <strong>{candidate.kind === 'table' ? candidate.tableName : candidate.kind === 'named-range' ? candidate.definedName : `Região ${index + 1}`}</strong>
+                    <small>{candidate.sheetName} · {candidate.range}</small>
+                    <small>{candidate.explanation}</small>
+                  </span>
+                  <em>{candidate.confidence === 'high' ? 'Alta confiança' : 'Média confiança'}</em>
+                </label>
+              ))}
+              {destinationCandidates.length === 0 ? <p>Nenhum destino detectado na aba selecionada.</p> : null}
+            </div>
+          ) : null}
+
+          {stepIndex === 3 && session.dataset && templateDataset ? (
+            <MappingGrid
+              sourceColumns={session.dataset.columns}
+              destinationColumns={templateDataset.columns}
+              mappings={mappings}
+              disabled={activeOperation !== null}
+              onChange={(next) => {
+                store.setState({ mappings: next });
+                setValidationResult(null);
+                setWritePlan(null);
+              }}
+            />
+          ) : null}
+
+          {stepIndex === 4 && session.dataset ? (
+            <TransformationEditor
+              dataset={session.dataset}
+              commands={commands}
+              busy={activeOperation !== null}
+              canUndo={commandHistory.current.past.length > 0}
+              canRedo={commandHistory.current.future.length > 0}
+              onReplace={replaceCommands}
+              onUndo={undoCommands}
+              onRedo={redoCommands}
+            />
+          ) : null}
+
+          {stepIndex === 5 && session.dataset ? (
+            <ValidationPanel
+              columns={session.dataset.columns}
+              detectedRules={detectedRules}
+              userRules={userRules}
+              issues={validationResult?.issues ?? []}
+              disabled={activeOperation !== null}
+              onAddRule={(rule) => {
+                store.setState({ validationRules: [...userRules, rule] });
+                setValidationResult(null);
+              }}
+              onRemoveRule={(index) => {
+                store.setState({ validationRules: userRules.filter((_, current) => current !== index) });
+                setValidationResult(null);
+              }}
+              onRun={runValidation}
+              onSelectIssue={(issue) => {
+                setFocusTarget({ rowId: issue.rowId, columnId: issue.columnId });
+                setStepIndex(6);
+                setHighestVisited((current) => Math.max(current, 6));
+              }}
+            />
+          ) : null}
+
+          {stepIndex === 6 && session.dataset ? (
+            <DataGrid
+              dataset={session.dataset}
+              issues={validationResult?.issues ?? []}
+              focusTarget={focusTarget}
+              busy={activeOperation !== null}
+              onEdit={editCell}
+            />
+          ) : null}
+
+          {stepIndex === 7 && session.dataset ? (
+            <div className="write-mode-grid">
+              {([
+                ['replace', 'Substituir', 'Limpa as linhas atuais e grava o conjunto preparado.'],
+                ['append', 'Acrescentar', 'Mantém as linhas atuais e adiciona novas linhas ao final.'],
+                ['update', 'Atualizar', 'Compara uma ou mais colunas-chave revisadas.'],
+              ] as const).map(([mode, label, description]) => (
+                <label key={mode} data-selected={writeMode === mode || undefined}>
+                  <input
+                    type="radio"
+                    name="write-mode"
+                    value={mode}
+                    checked={writeMode === mode}
+                    onChange={() => {
+                      setWriteMode(mode);
+                      setWritePlan(null);
+                    }}
+                  />
+                  <strong>{label}</strong>
+                  <span>{description}</span>
+                </label>
+              ))}
+              {writeMode === 'update' ? (
+                <fieldset className="key-columns">
+                  <legend>Colunas-chave revisadas</legend>
+                  {session.dataset.columns.map((column) => (
+                    <label key={column.id}>
+                      <input
+                        type="checkbox"
+                        checked={keyColumnIds.includes(column.id)}
+                        onChange={(event) => setKeyColumnIds((current) => event.currentTarget.checked
+                          ? [...current, column.id]
+                          : current.filter((id) => id !== column.id))}
+                      />
+                      {column.header}
+                    </label>
+                  ))}
+                </fieldset>
+              ) : null}
+            </div>
+          ) : null}
+
+          {stepIndex === 8 && writePlan ? (
+            <>
+              <ExportSummary plan={writePlan} validationRejected={validationResult?.issues.length ?? 0} />
+              <p className="summary-note">Modo selecionado: <strong>{writeMode === 'replace' ? 'Substituir' : writeMode === 'append' ? 'Acrescentar' : 'Atualizar'}</strong></p>
+            </>
+          ) : null}
+
+          {stepIndex === 9 ? (
+            <div className="export-panel">
+              <div className="export-icon" aria-hidden="true">XLSX</div>
+              <h3>{exported ? 'Arquivo exportado' : 'Tudo pronto para exportar'}</h3>
+              <p>O processamento acontece no navegador e o modelo original não será alterado.</p>
+              <button
+                type="button"
+                className="primary-button export-button"
+                disabled={activeOperation !== null || !writePlan || !validationResult}
+                onClick={exportWorkbook}
+              >
+                Exportar .xlsx
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        <footer className="workflow-footer">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={stepIndex === 0 || activeOperation !== null}
+            onClick={() => setStepIndex((current) => Math.max(0, current - 1))}
+          >
+            Voltar
+          </button>
+          {stepIndex < 9 ? (
+            <button
+              type="button"
+              className="primary-button"
+              disabled={!canAdvance || activeOperation !== null}
+              onClick={advance}
+            >
+              Avançar
+            </button>
+          ) : null}
+        </footer>
+      </section>
     </main>
   );
 }
+
+function DatasetFacts({ dataset }: { dataset: Dataset }) {
+  return (
+    <dl className="dataset-facts">
+      <div><dt>Linhas</dt><dd>{dataset.rows.length}</dd></div>
+      <div><dt>Colunas</dt><dd>{dataset.columns.length}</dd></div>
+      <div><dt>Processamento</dt><dd>Somente nesta sessão</dd></div>
+    </dl>
+  );
+}
+
+interface TransformationEditorProps {
+  dataset: Dataset;
+  commands: readonly TransformCommand[];
+  busy: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  onReplace(commands: TransformCommand[]): void;
+  onUndo(): void;
+  onRedo(): void;
+}
+
+function TransformationEditor({
+  dataset,
+  commands,
+  busy,
+  canUndo,
+  canRedo,
+  onReplace,
+  onUndo,
+  onRedo,
+}: TransformationEditorProps) {
+  const [type, setType] = useState<Exclude<TransformCommand['type'], 'editCell'>>('prefix');
+  const [columnId, setColumnId] = useState(dataset.columns[0]?.id ?? '');
+  const [secondColumnId, setSecondColumnId] = useState(dataset.columns[1]?.id ?? dataset.columns[0]?.id ?? '');
+  const [value, setValue] = useState('');
+  const [extra, setExtra] = useState('');
+  const [operator, setOperator] = useState('+');
+
+  const add = () => {
+    const command = buildTransform(type, { columnId, secondColumnId, value, extra, operator }, dataset);
+    if (command) onReplace([...commands, command]);
+  };
+
+  return (
+    <div className="transform-layout">
+      <section className="transform-form">
+        <h3>Adicionar transformação</h3>
+        <label>Tipo de transformação
+          <select value={type} disabled={busy} onChange={(event) => setType(event.currentTarget.value as typeof type)}>
+            {Object.entries(TRANSFORM_LABELS).filter(([commandType]) => commandType !== 'editCell').map(([commandType, label]) => (
+              <option value={commandType} key={commandType}>{label}</option>
+            ))}
+          </select>
+        </label>
+        <label>Coluna principal
+          <select value={columnId} disabled={busy} onChange={(event) => setColumnId(event.currentTarget.value)}>
+            {dataset.columns.map((column) => <option value={column.id} key={column.id}>{column.header}</option>)}
+          </select>
+        </label>
+        {['combineColumns', 'conditionalRule', 'calculatedColumn'].includes(type) ? (
+          <label>Segunda coluna
+            <select value={secondColumnId} disabled={busy} onChange={(event) => setSecondColumnId(event.currentTarget.value)}>
+              {dataset.columns.map((column) => <option value={column.id} key={column.id}>{column.header}</option>)}
+            </select>
+          </label>
+        ) : null}
+        {['calculatedColumn', 'conditionalRule'].includes(type) ? (
+          <label>Operador suportado
+            <select value={operator} disabled={busy} onChange={(event) => setOperator(event.currentTarget.value)}>
+              {['+', '-', '*', '/', '==', '!=', '>', '>=', '<', '<=', 'and', 'or'].map((item) => <option value={item} key={item}>{item}</option>)}
+            </select>
+          </label>
+        ) : null}
+        <label>{transformValueLabel(type)}
+          <input value={value} disabled={busy} onChange={(event) => setValue(event.currentTarget.value)} />
+        </label>
+        {['findReplace', 'combineColumns', 'splitColumn', 'conditionalRule', 'calculatedColumn'].includes(type) ? (
+          <label>{transformExtraLabel(type)}
+            <input value={extra} disabled={busy} onChange={(event) => setExtra(event.currentTarget.value)} />
+          </label>
+        ) : null}
+        {type === 'calculatedColumn' ? <p className="form-help">A expressão é convertida para a AST segura; JavaScript livre não é aceito.</p> : null}
+        <button type="button" className="primary-button" disabled={busy || columnId === ''} onClick={add}>Adicionar transformação</button>
+      </section>
+      <section className="command-stack">
+        <div className="command-toolbar">
+          <h3>Sequência aplicada</h3>
+          <button type="button" disabled={busy || !canUndo} onClick={onUndo}>Desfazer</button>
+          <button type="button" disabled={busy || !canRedo} onClick={onRedo}>Refazer</button>
+        </div>
+        {commands.length === 0 ? <p>Nenhuma transformação adicionada.</p> : (
+          <ol>
+            {commands.map((command, index) => (
+              <li key={`${command.type}-${index}`}>
+                <span>{index + 1}</span>
+                <strong>{TRANSFORM_LABELS[command.type]}</strong>
+                <div>
+                  <button type="button" aria-label={`Mover ${index + 1} para cima`} disabled={busy || index === 0} onClick={() => {
+                    const next = [...commands];
+                    [next[index - 1], next[index]] = [next[index], next[index - 1]];
+                    onReplace(next);
+                  }}>↑</button>
+                  <button type="button" aria-label={`Mover ${index + 1} para baixo`} disabled={busy || index === commands.length - 1} onClick={() => {
+                    const next = [...commands];
+                    [next[index], next[index + 1]] = [next[index + 1], next[index]];
+                    onReplace(next);
+                  }}>↓</button>
+                  <button type="button" disabled={busy} onClick={() => onReplace(commands.filter((_, current) => current !== index))}>Remover</button>
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function transformValueLabel(type: Exclude<TransformCommand['type'], 'editCell'>): string {
+  if (type === 'findReplace') return 'Localizar';
+  if (type === 'renameHeader') return 'Novo cabeçalho';
+  if (type === 'splitColumn') return 'Delimitador';
+  if (type === 'combineColumns') return 'Separador';
+  if (type === 'calculatedColumn') return 'Nome da nova coluna';
+  if (type === 'conditionalRule') return 'Valor de comparação';
+  if (type === 'filter') return 'Valor do filtro';
+  return 'Valor';
+}
+
+function transformExtraLabel(type: Exclude<TransformCommand['type'], 'editCell'>): string {
+  if (type === 'findReplace') return 'Substituir por';
+  if (type === 'splitColumn') return 'Cabeçalhos novos, separados por vírgula';
+  if (type === 'combineColumns') return 'Nome da nova coluna';
+  if (type === 'calculatedColumn') return 'Valor ou coluna secundária';
+  return 'Valor a gravar';
+}
+
+function buildTransform(
+  type: Exclude<TransformCommand['type'], 'editCell'>,
+  form: { columnId: string; secondColumnId: string; value: string; extra: string; operator: string },
+  dataset: Dataset,
+): TransformCommand | null {
+  const newColumn = (header: string) => ({ id: makeColumnId(header || 'Nova coluna', dataset.columns.length), header: header || 'Nova coluna' });
+  switch (type) {
+    case 'reorderColumns': return { type, columnIds: [form.columnId, ...dataset.columns.map(({ id }) => id).filter((id) => id !== form.columnId)] };
+    case 'sort': return { type, sorts: [{ columnId: form.columnId, direction: form.value === 'desc' ? 'desc' : 'asc' }] };
+    case 'filter': return { type, columnId: form.columnId, operator: 'contains', value: form.value };
+    case 'removeEmptyRows': return { type, columnIds: [form.columnId] };
+    case 'deduplicate': return { type, columnIds: [form.columnId], keep: form.value === 'last' ? 'last' : 'first' };
+    case 'renameHeader': return { type, columnId: form.columnId, header: form.value || 'Sem título' };
+    case 'splitColumn': {
+      const headers = form.extra.split(',').map((header) => header.trim()).filter(Boolean);
+      const finalHeaders = headers.length > 0 ? headers : ['Parte 1', 'Parte 2'];
+      return { type, columnId: form.columnId, delimiter: form.value || ' ', newColumns: finalHeaders.map((header, index) => ({ id: makeColumnId(header, dataset.columns.length + index), header })) };
+    }
+    case 'combineColumns': return { type, columnIds: [form.columnId, form.secondColumnId], separator: form.value, newColumn: newColumn(form.extra) };
+    case 'findReplace': return { type, columnIds: [form.columnId], find: form.value, replace: form.extra, caseSensitive: false };
+    case 'dateConversion': return { type, columnId: form.columnId, inputFormat: 'auto', outputFormat: form.value === 'dd/MM/yyyy' ? 'dd/MM/yyyy' : 'yyyy-MM-dd' };
+    case 'numberConversion': return { type, columnId: form.columnId, decimalSeparator: form.value === ',' ? ',' : '.' };
+    case 'currencyConversion': return { type, columnId: form.columnId, locale: form.value || 'pt-BR', currency: form.extra || 'BRL' };
+    case 'prefix': return { type, columnId: form.columnId, value: form.value };
+    case 'suffix': return { type, columnId: form.columnId, value: form.value };
+    case 'fixedValue': return { type, columnId: form.columnId, value: form.value };
+    case 'calculatedColumn': return {
+      type,
+      newColumn: newColumn(form.value),
+      expression: {
+        type: 'binary',
+        operator: form.operator as Extract<TransformCommand, { type: 'calculatedColumn' }>['expression'] extends { type: 'binary'; operator: infer Operator } ? Operator : never,
+        left: { type: 'column', columnId: form.columnId },
+        right: form.extra === '' ? { type: 'column', columnId: form.secondColumnId } : { type: 'literal', value: Number.isFinite(Number(form.extra)) ? Number(form.extra) : form.extra },
+      },
+    };
+    case 'conditionalRule': return {
+      type,
+      condition: {
+        type: 'binary',
+        operator: form.operator as Extract<TransformCommand, { type: 'conditionalRule' }>['condition'] extends { type: 'binary'; operator: infer Operator } ? Operator : never,
+        left: { type: 'column', columnId: form.columnId },
+        right: { type: 'literal', value: Number.isFinite(Number(form.value)) ? Number(form.value) : form.value },
+      },
+      updates: [{ columnId: form.secondColumnId, value: form.extra }],
+    };
+  }
+}
+
+const APP_STYLES = `
+  :root { color: #17251f; background: #f2f5f3; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-synthesis: none; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-width: 320px; min-height: 100vh; background: radial-gradient(circle at top right, #dfeee5 0, transparent 32rem), #f2f5f3; }
+  button, input, select { font: inherit; }
+  button { cursor: pointer; }
+  button:disabled, input:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
+  .app-shell { width: min(1500px, calc(100% - 40px)); margin: 0 auto; padding: 28px 0 48px; }
+  .app-header { display: flex; align-items: center; gap: 14px; margin-bottom: 26px; }
+  .brand-mark { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 13px; color: white; background: #176b45; font-weight: 900; box-shadow: 0 8px 24px #176b4530; }
+  .app-header p { margin: 0 0 2px; color: #648074; font-size: 12px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+  .app-header h1 { margin: 0; font-size: 23px; letter-spacing: -.03em; }
+  .app-header .text-button { margin-left: auto; }
+  .text-button { border: 0; color: #176b45; background: transparent; font-weight: 750; }
+  .stepper { margin-bottom: 18px; overflow-x: auto; }
+  .stepper ol { display: grid; grid-template-columns: repeat(10, minmax(116px, 1fr)); min-width: 1160px; margin: 0; padding: 0; list-style: none; }
+  .stepper li { position: relative; }
+  .stepper li:not(:last-child)::after { content: ""; position: absolute; z-index: 0; top: 16px; right: -18%; width: 36%; height: 1px; background: #c8d5cf; }
+  .stepper button { position: relative; z-index: 1; display: grid; justify-items: center; gap: 7px; width: 100%; border: 0; color: #718078; background: transparent; font-size: 11px; font-weight: 700; white-space: nowrap; }
+  .stepper button span { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid #bdcac4; border-radius: 50%; background: #f2f5f3; font-size: 10px; }
+  .stepper li[data-state="current"] button { color: #124f35; }
+  .stepper li[data-state="current"] button span, .stepper li[data-state="visited"] button span { border-color: #176b45; color: white; background: #176b45; }
+  .workflow-card { overflow: hidden; border: 1px solid #d9e1dd; border-radius: 22px; background: rgba(255,255,255,.94); box-shadow: 0 20px 70px rgba(28,54,42,.09); }
+  .step-heading { padding: 28px 34px 24px; border-bottom: 1px solid #e6ebe8; }
+  .step-heading span { color: #32815d; font-size: 11px; font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }
+  .step-heading h2 { margin: 6px 0 5px; font-size: 26px; letter-spacing: -.035em; }
+  .step-heading p { margin: 0; color: #65766e; }
+  .step-content { min-height: 340px; padding: 30px 34px; }
+  .workflow-footer { display: flex; justify-content: space-between; padding: 20px 34px; border-top: 1px solid #e6ebe8; background: #fbfcfb; }
+  .primary-button, .secondary-button, .mapping-actions button, .command-toolbar button, .command-stack button, .validation-layout button, .operation-panel button { min-height: 40px; padding: 9px 16px; border-radius: 10px; font-weight: 750; }
+  .primary-button { border: 1px solid #176b45; color: white; background: #176b45; box-shadow: 0 5px 13px #176b4524; }
+  .secondary-button { border: 1px solid #bac8c1; color: #274538; background: white; }
+  .visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+  .file-drop { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 18px; padding: 26px; border: 1.5px dashed #a9c2b6; border-radius: 17px; background: #f8fbf9; transition: .2s ease; }
+  .file-drop[data-dragging] { border-color: #176b45; background: #edf7f1; transform: translateY(-2px); }
+  .file-drop-mark { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 14px; color: #176b45; background: #e2f1e8; font-size: 26px; font-weight: 800; }
+  .file-drop strong { display: block; margin-bottom: 4px; }
+  .file-drop p { margin: 0; color: #6f7e77; font-size: 13px; }
+  .file-drop label { cursor: pointer; }
+  .field { display: grid; gap: 7px; max-width: 420px; margin-top: 22px; color: #3c5148; font-size: 13px; font-weight: 750; }
+  .field select, .transform-form select, .transform-form input, .mapping-grid select, .mapping-grid input, .inline-form select { width: 100%; min-height: 42px; padding: 8px 11px; border: 1px solid #c9d4cf; border-radius: 9px; color: #17251f; background: white; }
+  .selection-note { color: #176b45; font-weight: 700; }
+  .dataset-facts, .export-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 22px 0 0; }
+  .dataset-facts div, .export-summary div { padding: 17px; border: 1px solid #dfE7e3; border-radius: 13px; background: #fbfcfb; }
+  .dataset-facts dt, .export-summary dt { color: #708078; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+  .dataset-facts dd, .export-summary dd { margin: 6px 0 0; color: #173e2c; font-size: 20px; font-weight: 850; }
+  .candidate-list { display: grid; gap: 10px; }
+  .candidate-list > label { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px; padding: 18px; border: 1px solid #d6dfdb; border-radius: 14px; background: #fff; cursor: pointer; }
+  .candidate-list > label[data-selected] { border-color: #2b865e; background: #f0f8f4; box-shadow: 0 0 0 2px #2b865e18; }
+  .candidate-list span { display: grid; gap: 3px; }
+  .candidate-list small { color: #6d7c75; }
+  .candidate-list em { color: #267651; font-size: 12px; font-style: normal; font-weight: 800; }
+  .mapping-grid { overflow-x: auto; border: 1px solid #dce4e0; border-radius: 14px; }
+  .mapping-header, .mapping-row { display: grid; grid-template-columns: minmax(140px,.8fr) minmax(220px,1.2fr) minmax(130px,.65fr) minmax(330px,1.8fr); align-items: center; min-width: 950px; }
+  .mapping-header { color: #6c7a73; background: #f5f8f6; font-size: 11px; font-weight: 850; letter-spacing: .06em; text-transform: uppercase; }
+  .mapping-header > *, .mapping-row > * { padding: 14px; }
+  .mapping-row { border-top: 1px solid #e6ebe8; }
+  .mapping-row select + input { margin-top: 7px; }
+  .confidence { font-size: 12px; font-weight: 750; }
+  .confidence-exact, .confidence-high { color: #1c7750; }
+  .confidence-medium { color: #9a6819; }
+  .confidence-low { color: #a44c46; }
+  .mapping-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .mapping-actions button { min-height: 32px; padding: 6px 9px; border: 1px solid #cbd6d1; color: #315245; background: white; font-size: 11px; }
+  .status-ok, .status-review { width: 100%; font-size: 11px; font-weight: 850; }
+  .status-ok { color: #177048; } .status-review { color: #9a6819; }
+  .transform-layout, .validation-layout { display: grid; grid-template-columns: minmax(300px,.8fr) minmax(420px,1.4fr); gap: 22px; align-items: start; }
+  .transform-form, .command-stack, .panel-section { padding: 20px; border: 1px solid #dde5e1; border-radius: 14px; background: #fbfcfb; }
+  .transform-form { display: grid; gap: 13px; }
+  .transform-form h3, .command-stack h3, .panel-section h3 { margin: 0; }
+  .transform-form label, .inline-form label { display: grid; gap: 5px; color: #4f6259; font-size: 12px; font-weight: 750; }
+  .form-help { margin: 0; color: #708078; font-size: 12px; }
+  .command-toolbar { display: flex; align-items: center; gap: 7px; }
+  .command-toolbar h3 { margin-right: auto; }
+  .command-toolbar button, .command-stack li button { min-height: 32px; padding: 5px 9px; border: 1px solid #cbd5d0; color: #355146; background: white; }
+  .command-stack ol { display: grid; gap: 8px; margin: 16px 0 0; padding: 0; list-style: none; }
+  .command-stack li { display: grid; grid-template-columns: 30px 1fr auto; align-items: center; gap: 9px; padding: 10px; border: 1px solid #e1e8e4; border-radius: 10px; background: white; }
+  .command-stack li > span { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; color: #176b45; background: #e6f2eb; font-size: 11px; font-weight: 850; }
+  .command-stack li div { display: flex; gap: 5px; }
+  .validation-layout { grid-template-columns: 1fr 1fr; }
+  .panel-section ul { padding-left: 20px; color: #52655c; }
+  .panel-section li { margin: 8px 0; }
+  .inline-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-top: 14px; align-items: end; }
+  .validation-run { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 16px; border-radius: 12px; background: #eff6f2; }
+  .issue-list { grid-column: 1 / -1; display: grid; gap: 7px; }
+  .issue-list button { display: grid; grid-template-columns: 100px 160px 1fr; gap: 10px; text-align: left; border: 1px solid #edd2cf; color: #69342e; background: #fff8f7; }
+  .data-grid-shell { overflow: hidden; border: 1px solid #d8e1dc; border-radius: 14px; }
+  .grid-toolbar { display: flex; justify-content: space-between; padding: 11px 14px; color: #52655c; background: #f5f8f6; font-size: 12px; font-weight: 700; }
+  .grid-toolbar label { display: flex; gap: 8px; }
+  .data-grid-header, .data-grid-row { display: grid; }
+  .data-grid-header { overflow: hidden; color: #44574e; background: #eaf0ed; font-size: 11px; font-weight: 850; }
+  .data-grid-header > div, .data-grid-row > div { min-width: 0; padding: 10px; border-right: 1px solid #dde5e1; }
+  .data-grid-viewport { position: relative; height: 360px; overflow: auto; background: white; }
+  .data-grid-row { position: absolute; top: 0; left: 0; width: 100%; min-height: 42px; border-bottom: 1px solid #e6ebe8; }
+  .data-grid-row > div { padding: 5px 8px; }
+  .data-grid-row [role="rowheader"] { color: #728078; background: #f8faf9; font-size: 11px; font-weight: 750; }
+  .data-grid-row input { width: 100%; height: 31px; padding: 4px 6px; border: 1px solid transparent; border-radius: 6px; background: transparent; }
+  .data-grid-row input:hover, .data-grid-row input:focus { border-color: #8fb7a3; outline: none; background: #f7fbf9; }
+  .data-grid-row [data-invalid] { box-shadow: inset 3px 0 #c75b50; background: #fff8f7; }
+  .write-mode-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .write-mode-grid > label { display: grid; grid-template-columns: auto 1fr; align-items: start; gap: 9px; padding: 18px; border: 1px solid #d7e0dc; border-radius: 14px; cursor: pointer; }
+  .write-mode-grid > label[data-selected] { border-color: #277c55; background: #f0f8f4; }
+  .write-mode-grid > label span { grid-column: 2; color: #697971; font-size: 12px; line-height: 1.5; }
+  .key-columns { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 12px; padding: 16px; border: 1px solid #d7e0dc; border-radius: 12px; }
+  .key-columns legend { padding: 0 6px; font-weight: 800; }
+  .key-columns label { display: flex; gap: 6px; }
+  .export-summary { grid-template-columns: repeat(5, 1fr); }
+  .export-summary dd { font-size: 28px; }
+  .summary-note { margin-top: 18px; color: #66766e; }
+  .export-panel { display: grid; justify-items: center; padding: 28px; text-align: center; }
+  .export-icon { display: grid; place-items: center; width: 76px; height: 76px; border-radius: 22px; color: white; background: #176b45; font-size: 13px; font-weight: 900; letter-spacing: .08em; box-shadow: 0 14px 30px #176b4538; }
+  .export-panel h3 { margin: 18px 0 5px; font-size: 24px; }
+  .export-panel p { margin: 0 0 20px; color: #687870; }
+  .export-button { min-width: 220px; }
+  .operation-panel { display: grid; grid-template-columns: minmax(160px,auto) 1fr 54px auto; align-items: center; gap: 13px; margin: 18px 34px 0; padding: 13px 16px; border: 1px solid #b9d5c7; border-radius: 12px; background: #f0f8f4; }
+  .operation-panel div { display: grid; } .operation-panel div span { color: #667870; font-size: 11px; }
+  .operation-panel progress { width: 100%; accent-color: #176b45; }
+  .operation-panel button { border: 1px solid #b9c8c1; color: #375246; background: white; }
+  .error-banner { margin: 18px 34px 0; padding: 13px 16px; border: 1px solid #e6b8b2; border-radius: 11px; color: #7b332d; background: #fff3f2; }
+  @media (max-width: 900px) {
+    .app-shell { width: min(100% - 20px, 1500px); padding-top: 16px; }
+    .step-heading, .step-content, .workflow-footer { padding-left: 20px; padding-right: 20px; }
+    .file-drop { grid-template-columns: auto 1fr; } .file-drop label { grid-column: 1 / -1; text-align: center; }
+    .transform-layout, .validation-layout { grid-template-columns: 1fr; }
+    .validation-run, .issue-list { grid-column: 1; }
+    .write-mode-grid { grid-template-columns: 1fr; } .key-columns { grid-column: 1; }
+    .export-summary { grid-template-columns: repeat(2, 1fr); }
+    .operation-panel { grid-template-columns: 1fr auto; } .operation-panel progress { grid-column: 1 / -1; order: 3; }
+  }
+  @media (max-width: 560px) {
+    .app-header p { display: none; }
+    .app-header h1 { font-size: 19px; }
+    .file-drop { grid-template-columns: 1fr; text-align: center; justify-items: center; }
+    .dataset-facts { grid-template-columns: 1fr; }
+    .inline-form { grid-template-columns: 1fr; }
+    .issue-list button { grid-template-columns: 1fr; }
+    .workflow-footer { position: sticky; bottom: 0; z-index: 3; }
+  }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
+`;

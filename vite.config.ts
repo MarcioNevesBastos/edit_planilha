@@ -22,6 +22,9 @@ function emitManifest(): Plugin {
 
 export default defineConfig({
   plugins: [react(), emitManifest()],
+  worker: {
+    format: 'es',
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

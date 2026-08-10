@@ -5,9 +5,12 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
+    "test:e2e": "playwright test",
+    "dev:e2e": "vite --host 127.0.0.1 --port 4173",
     "build": "vite build"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.9",
     "fast-xml-parser": "^5.10.1",
     "fflate": "^0.8.3",
     "papaparse": "^5.5.3",
@@ -16,11 +19,16 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "@types/papaparse": "^5.3.16",
+    "@playwright/test": "^1.62.1",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.3",
     "@types/chrome": "^0.0.270",
+    "@types/papaparse": "^5.3.16",
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^4.7.0",
+    "jsdom": "^30.0.1",
     "typescript": "^5.9.2",
     "vite": "^7.1.2",
     "vitest": "^3.2.4"
