@@ -77,4 +77,17 @@ export interface WritePlan {
   assignments: DestinationRowAssignment[];
 }
 
+export type WritePlanProgressPhase = 'plan' | 'plan-assign';
+
+export interface WritePlanBatchProgress {
+  completed: number;
+  total: number;
+  phase: WritePlanProgressPhase;
+}
+
+export interface WritePlanBatchOptions {
+  batchSize: number;
+  onProgress(progress: WritePlanBatchProgress): Promise<void> | void;
+}
+
 export type { CellValue, DataRow, Dataset };

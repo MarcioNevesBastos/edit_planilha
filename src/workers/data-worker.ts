@@ -1,10 +1,9 @@
 import { CancellationRegistry } from '../utils/cancellation';
-import type { DataRow, Dataset } from '../domain/dataset/types';
-import { planWrite } from '../domain/merge/plan-write';
+import type { CellValue, DataRow, Dataset } from '../domain/dataset/types';
+import { planWriteInBatches } from '../domain/merge/plan-write';
 import { applyTransform } from '../domain/transforms/apply-transform';
 import type { TransformCommand } from '../domain/transforms/types';
 import { validateRow } from '../domain/validation/validate-row';
-import type { CellValue } from '../domain/dataset/types';
 import type { ValidationIssue, ValidationRule } from '../domain/validation/types';
 import { readSource } from '../io/source/read-source';
 import { exportWorkbook } from '../io/template/export-workbook';
@@ -105,7 +104,7 @@ export function createDataWorkerDispatcher(
   const dispatch = async (request: WorkerRequest): Promise<void> => {
     try {
       ensureNotCancelled(request.operationId);
-      const result = await dispatchRequest(request, runBatches, ensureNotCancelled);
+      const result = await dispatchRequest(request, runBatches, ensureNotCancelled, emitProgress);
       ensureNotCancelled(request.operationId);
       emit({ type: 'RESULT', operationId: request.operationId, result });
     } catch (error) {
@@ -151,6 +150,7 @@ async function dispatchRequest(
     processBatch: (start: number, end: number) => void,
   ) => Promise<void>,
   ensureNotCancelled: (operationId: string) => void,
+  reportProgress: (operationId: string, completed: number, total: number, phase: WorkerPhase) => void,
 ): Promise<WorkerResult> {
   switch (request.type) {
     case 'IMPORT_SOURCE': {
@@ -216,27 +216,37 @@ async function dispatchRequest(
     }
     case 'PLAN_WRITE': {
       ensureNotCancelled(request.operationId);
-      assertWorkerRowBudget(
-        'Plan write',
-        Math.max(request.input.incoming.rows.length, request.input.existing.rows.length),
-        request.batchSize,
-      );
-      const writePlan = planWrite(request.input);
+      const writePlan = await planWriteInBatches(request.input, {
+        batchSize: normalizeBatchSize(request.batchSize),
+        onProgress: async ({ completed, total, phase }) => {
+          ensureNotCancelled(request.operationId);
+          reportProgress(request.operationId, completed, total, phase);
+          await yieldToMessageLoop();
+          ensureNotCancelled(request.operationId);
+        },
+      });
       ensureNotCancelled(request.operationId);
       return { type: 'PLAN_WRITE', writePlan };
     }
     case 'EXPORT': {
       ensureNotCancelled(request.operationId);
-      assertWorkerRowBudget(
-        'Export',
-        request.input.writePlan.clears.length
-          + request.input.writePlan.inserts.length
-          + request.input.writePlan.updates.length,
-        request.batchSize,
-      );
       const packageForExport = await openOoxmlPackage(request.templateBuffer);
       ensureNotCancelled(request.operationId);
-      const blob = await exportWorkbook({ ...request.input, package: packageForExport });
+      const blob = await exportWorkbook(
+        { ...request.input, package: packageForExport },
+        {
+          batchSize: normalizeBatchSize(request.batchSize),
+          onProgress: async ({ completed, total, phase }) => {
+            const workerPhase = phase === 'write'
+              ? 'export'
+              : phase === 'expansion' ? 'export-expansion' : 'export-rejected';
+            ensureNotCancelled(request.operationId);
+            reportProgress(request.operationId, completed, total, workerPhase);
+            await yieldToMessageLoop();
+            ensureNotCancelled(request.operationId);
+          },
+        },
+      );
       const buffer = await blob.arrayBuffer();
       ensureNotCancelled(request.operationId);
       return { type: 'EXPORT', buffer };
@@ -251,13 +261,6 @@ function normalizeBatchSize(batchSize: number | undefined): number {
     throw new RangeError('batchSize must be a positive whole number');
   }
   return value;
-}
-
-function assertWorkerRowBudget(operation: string, rowCount: number, batchSize: number | undefined): void {
-  const normalizedBatchSize = normalizeBatchSize(batchSize);
-  if (rowCount > normalizedBatchSize) {
-    throw new UnsupportedLargeOperation(operation, rowCount, normalizedBatchSize);
-  }
 }
 
 function isRowHeavyTransform(command: TransformCommand): boolean {
@@ -347,14 +350,20 @@ async function validateUniqueRuleInBatches(
 
   const duplicateGroups = [...groups.values()].filter((rows) => rows.length > 1);
   const issues: ValidationIssue[] = [];
+  const duplicateRowTotal = duplicateGroups.reduce((total, rows) => total + rows.length, 0);
   await runBatches(
     operationId,
-    duplicateGroups.length,
+    duplicateRowTotal,
     batchSize,
     'validate-unique-output',
     (start, end) => {
-      for (const rows of duplicateGroups.slice(start, end)) {
-        for (const row of rows) {
+      let groupStart = 0;
+      for (const rows of duplicateGroups) {
+        const groupEnd = groupStart + rows.length;
+        const rowStart = Math.max(start, groupStart) - groupStart;
+        const rowEnd = Math.min(end, groupEnd) - groupStart;
+        for (let index = Math.max(0, rowStart); index < Math.max(0, rowEnd); index += 1) {
+          const row = rows[index];
           const columnId = rule.type === 'unique' ? rule.columnId : rule.columnIds[0];
           issues.push({
             rowId: row.rowId,
@@ -365,6 +374,8 @@ async function validateUniqueRuleInBatches(
             message: rule.type === 'unique' ? 'Value must be unique.' : 'Combined values must be unique.',
           });
         }
+        groupStart = groupEnd;
+        if (groupStart >= end) break;
       }
     },
   );

@@ -10,6 +10,16 @@ export interface DestinationExpansionPlan {
   tablePath?: string;
 }
 
+export interface DestinationExpansionProgress {
+  completed: number;
+  total: number;
+}
+
+export interface DestinationExpansionOptions {
+  batchSize: number;
+  onProgress(progress: DestinationExpansionProgress): Promise<void> | void;
+}
+
 interface CellRange {
   startColumn: string;
   startRow: number;
@@ -20,6 +30,7 @@ interface CellRange {
 export async function expandDestination(
   pkg: OoxmlPackage,
   plan: DestinationExpansionPlan,
+  options?: DestinationExpansionOptions,
 ): Promise<void> {
   const destination = parseRange(plan.destinationRange);
   validatePlan(plan, destination);
@@ -32,12 +43,16 @@ export async function expandDestination(
 
   const targetLastRow = destination.endRow + additionalRows;
   const worksheet = decode(pkg.readPart(plan.worksheetPath));
-  const expandedWorksheet = expandWorksheet(
+  if (options && (!Number.isSafeInteger(options.batchSize) || options.batchSize < 1)) {
+    throw new RangeError('batchSize must be a positive whole number');
+  }
+  const expandedWorksheet = await expandWorksheet(
     worksheet,
     destination,
     plan.templateRow,
     additionalRows,
     targetLastRow,
+    options,
   );
   const expandedTable = plan.tablePath
     ? expandTable(
@@ -76,13 +91,14 @@ function validatePlan(plan: DestinationExpansionPlan, destination: CellRange): v
   }
 }
 
-function expandWorksheet(
+async function expandWorksheet(
   worksheet: string,
   destination: CellRange,
   templateRowNumber: number,
   additionalRows: number,
   targetLastRow: number,
-): string {
+  options?: DestinationExpansionOptions,
+): Promise<string> {
   const sheetDataMatch = worksheet.match(/<sheetData\b[^>]*>([\s\S]*?)<\/sheetData>/);
   if (!sheetDataMatch) {
     throw new Error('Worksheet has no sheetData element');
@@ -95,10 +111,12 @@ function expandWorksheet(
     throw new Error(`Template row ${templateRowNumber} was not found in worksheet`);
   }
 
-  const clones = Array.from({ length: additionalRows }, (_, index) => {
-    const rowNumber = destination.endRow + index + 1;
-    return shiftRow(template, rowNumber - templateRowNumber, true);
-  }).join('');
+  const clones = options
+    ? await buildRowClones(template, destination, templateRowNumber, additionalRows, options)
+    : Array.from({ length: additionalRows }, (_, index) => {
+      const rowNumber = destination.endRow + index + 1;
+      return shiftRow(template, rowNumber - templateRowNumber, true);
+    }).join('');
 
   let inserted = false;
   const expandedSheetData = sheetDataMatch[1].replace(rowPattern, (row, rowText: string) => {
@@ -128,6 +146,25 @@ function expandWorksheet(
     additionalRows,
   );
   return result;
+}
+
+async function buildRowClones(
+  template: string,
+  destination: CellRange,
+  templateRowNumber: number,
+  additionalRows: number,
+  options: DestinationExpansionOptions,
+): Promise<string> {
+  const clones: string[] = [];
+  for (let start = 0; start < additionalRows; start += options.batchSize) {
+    const end = Math.min(additionalRows, start + options.batchSize);
+    for (let index = start; index < end; index += 1) {
+      const rowNumber = destination.endRow + index + 1;
+      clones.push(shiftRow(template, rowNumber - templateRowNumber, true));
+    }
+    await options.onProgress({ completed: end, total: additionalRows });
+  }
+  return clones.join('');
 }
 
 function expandTable(

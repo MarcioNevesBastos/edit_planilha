@@ -16,9 +16,20 @@ export interface RejectedSheetRow {
   failedRuleOrTransform: string;
 }
 
+export interface RejectedSheetProgress {
+  completed: number;
+  total: number;
+}
+
+export interface RejectedSheetOptions {
+  batchSize: number;
+  onProgress(progress: RejectedSheetProgress): Promise<void> | void;
+}
+
 export async function addRejectedSheet(
   pkg: OoxmlPackage,
   rows: readonly RejectedSheetRow[],
+  options?: RejectedSheetOptions,
 ): Promise<string> {
   const index = await indexWorkbook(pkg);
   const sheetName = uniqueSheetName(
@@ -32,7 +43,10 @@ export async function addRejectedSheet(
   const worksheetTarget = `worksheets/sheet${worksheetNumber}.xml`;
   const worksheetPath = `${workbookDirectory}/${worksheetTarget}`;
   const relationshipsPath = relationshipPartPath(index.workbookPath);
-  const worksheet = rejectedWorksheet(rows);
+  if (options && (!Number.isSafeInteger(options.batchSize) || options.batchSize < 1)) {
+    throw new RangeError('batchSize must be a positive whole number');
+  }
+  const worksheet = await rejectedWorksheet(rows, options);
   const workbook = appendBeforeClosingTag(
     decode(pkg.readPart(index.workbookPath)),
     'sheets',
@@ -57,7 +71,7 @@ export async function addRejectedSheet(
   return sheetName;
 }
 
-function rejectedWorksheet(rows: readonly RejectedSheetRow[]): string {
+async function rejectedWorksheet(rows: readonly RejectedSheetRow[], options?: RejectedSheetOptions): Promise<string> {
   const originalFields = uniqueOriginalFields(rows);
   const headers = [
     'source row number',
@@ -67,17 +81,18 @@ function rejectedWorksheet(rows: readonly RejectedSheetRow[]): string {
     'rejection reason',
     'failed rule/transform',
   ];
-  const data = rows.map((row) => [
-    row.sourceRowNumber,
-    ...originalFields.map((field) => row.originalRelevantFields[field] ?? null),
-    row.errorField,
-    row.invalidValue,
-    row.rejectionReason,
-    row.failedRuleOrTransform,
-  ]);
-  const allRows: readonly (readonly CellValue[])[] = [headers, ...data];
-  const lastCell = `${columnName(headers.length)}${allRows.length}`;
-  const sheetData = allRows.map((values, index) => worksheetRow(index + 1, values)).join('');
+  const allRows: readonly (readonly CellValue[])[] = [headers];
+  const lastCell = `${columnName(headers.length)}${rows.length + 1}`;
+  const sheetData = options
+    ? await rejectedRowsInBatches(rows, originalFields, options)
+    : allRows.concat(rows.map((row) => [
+      row.sourceRowNumber,
+      ...originalFields.map((field) => row.originalRelevantFields[field] ?? null),
+      row.errorField,
+      row.invalidValue,
+      row.rejectionReason,
+      row.failedRuleOrTransform,
+    ])).map((values, index) => worksheetRow(index + 1, values)).join('');
 
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
     + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
@@ -87,6 +102,37 @@ function rejectedWorksheet(rows: readonly RejectedSheetRow[]): string {
     + `<sheetData>${sheetData}</sheetData>`
     + '<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>'
     + '</worksheet>';
+}
+
+async function rejectedRowsInBatches(
+  rows: readonly RejectedSheetRow[],
+  originalFields: readonly string[],
+  options: RejectedSheetOptions,
+): Promise<string> {
+  const chunks: string[] = [];
+  for (let start = 0; start < rows.length; start += options.batchSize) {
+    const end = Math.min(rows.length, start + options.batchSize);
+    for (let index = start; index < end; index += 1) {
+      const row = rows[index];
+      chunks.push(worksheetRow(index + 2, [
+        row.sourceRowNumber,
+        ...originalFields.map((field) => row.originalRelevantFields[field] ?? null),
+        row.errorField,
+        row.invalidValue,
+        row.rejectionReason,
+        row.failedRuleOrTransform,
+      ]));
+    }
+    await options.onProgress({ completed: end, total: rows.length });
+  }
+  return worksheetRow(1, [
+    'source row number',
+    ...originalFields,
+    'error field',
+    'invalid value',
+    'rejection reason',
+    'failed rule/transform',
+  ]) + chunks.join('');
 }
 
 function uniqueOriginalFields(rows: readonly RejectedSheetRow[]): string[] {

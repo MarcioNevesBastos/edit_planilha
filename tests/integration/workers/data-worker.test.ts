@@ -180,6 +180,35 @@ describe('data worker dispatcher', () => {
     });
   });
 
+  it('emits one large duplicate group in row-sized cancellable batches', async () => {
+    const messages: WorkerResponse[] = [];
+    const dispatcher = createDataWorkerDispatcher((message) => {
+      messages.push(message);
+      if (message.type === 'PROGRESS' && message.operationId === 'unique-output-large' && message.phase === 'validate-unique-output' && message.completed === 1) {
+        dispatcher.cancel('unique-output-large');
+      }
+    });
+    const input = dataset(Array.from({ length: 5 }, (_, index) => row(
+      `r-${index + 1}`,
+      index + 2,
+      { name__1: 'Repeated' },
+    )));
+
+    await dispatcher.dispatch({
+      type: 'VALIDATE',
+      operationId: 'unique-output-large',
+      dataset: input,
+      rules: [{ type: 'unique', columnId: 'name__1' }],
+      batchSize: 1,
+    });
+
+    expect(messages).toContainEqual({
+      type: 'PROGRESS', operationId: 'unique-output-large', completed: 1, total: 5, phase: 'validate-unique-output',
+    });
+    expect(messages).toContainEqual({ type: 'CANCELLED', operationId: 'unique-output-large' });
+    expect(messages.some((message) => message.type === 'RESULT' && message.operationId === 'unique-output-large')).toBe(false);
+  });
+
   it('routes a small export request through the Task 9 exporter', async () => {
     const messages: WorkerResponse[] = [];
     const dispatcher = createDataWorkerDispatcher((message) => messages.push(message));
@@ -228,6 +257,14 @@ describe('data worker dispatcher', () => {
           rejected: [],
           assignments: [{ kind: 'insert', incomingRowId: 'incoming-1', destinationRow: 3 }],
         },
+        rejectedRows: [{
+          sourceRowNumber: 9,
+          originalRelevantFields: { source_id: 11 },
+          errorField: 'source_id',
+          invalidValue: 11,
+          rejectionReason: 'invalid',
+          failedRuleOrTransform: 'required',
+        }],
         validationResult: { isValid: true, issues: [] },
       },
     });
@@ -239,56 +276,89 @@ describe('data worker dispatcher', () => {
     }));
   });
 
-  it('blocks an export request larger than its configured row budget before opening the package', async () => {
+  it('processes export rows in cancellable batches and accounts for rejected rows', async () => {
     const messages: WorkerResponse[] = [];
-    const dispatcher = createDataWorkerDispatcher((message) => messages.push(message));
+    const dispatcher = createDataWorkerDispatcher((message) => {
+      messages.push(message);
+      if (message.type === 'PROGRESS' && message.operationId === 'export-large' && message.phase === 'export' && message.completed === 1) {
+        dispatcher.cancel('export-large');
+      }
+    });
+    const fixture = await readFile(new URL('../../../src/test-fixtures/workbooks/template-structured.xlsx', import.meta.url));
+    const templateBuffer = fixture.buffer.slice(
+      fixture.byteOffset,
+      fixture.byteOffset + fixture.byteLength,
+    ) as ArrayBuffer;
 
     await dispatcher.dispatch({
       type: 'EXPORT',
       operationId: 'export-large',
-      templateBuffer: new ArrayBuffer(1),
+      templateBuffer,
       batchSize: 1,
       input: {
         destination: {
-          sheetName: 'Data',
-          range: 'A1:A3',
-          dataStartRow: 2,
-          templateRow: 2,
-          columns: [{ id: 'target_name', column: 'A' }],
+          sheetName: 'Dados Modelo',
+          range: 'A2:D5',
+          dataStartRow: 3,
+          templateRow: 5,
+          tablePath: 'xl/tables/table1.xml',
+          columns: [
+            { id: 'target_id', column: 'A' },
+            { id: 'target_product', column: 'B' },
+            { id: 'target_quantity', column: 'C' },
+            { id: 'target_price', column: 'D' },
+          ],
         },
-        mappings: [],
+        mappings: [
+          { sourceColumnId: 'source_id', destinationColumnId: 'target_id', confidence: 'exact', score: 1, status: 'accepted' },
+          { sourceColumnId: 'source_product', destinationColumnId: 'target_product', confidence: 'exact', score: 1, status: 'accepted' },
+          { sourceColumnId: 'source_quantity', destinationColumnId: 'target_quantity', confidence: 'exact', score: 1, status: 'accepted' },
+          { sourceColumnId: 'source_price', destinationColumnId: 'target_price', confidence: 'exact', score: 1, status: 'accepted' },
+        ],
         writePlan: {
-          mode: 'append',
-          headerRow: 1,
+          mode: 'replace',
+          headerRow: 2,
           clears: [],
           inserts: [
-            { incomingRowId: 'r-1', destinationRow: 2, values: { name__1: 'Ana' } },
-            { incomingRowId: 'r-2', destinationRow: 3, values: { name__1: 'Bia' } },
+            { incomingRowId: 'r-1', destinationRow: 3, values: { source_id: 1, source_product: 'Ana', source_quantity: 1, source_price: 1 } },
+            { incomingRowId: 'r-2', destinationRow: 4, values: { source_id: 2, source_product: 'Bia', source_quantity: 2, source_price: 2 } },
           ],
           updates: [],
           kept: [],
           duplicates: [],
           rejected: [],
           assignments: [
-            { kind: 'insert', incomingRowId: 'r-1', destinationRow: 2 },
-            { kind: 'insert', incomingRowId: 'r-2', destinationRow: 3 },
+            { kind: 'insert', incomingRowId: 'r-1', destinationRow: 3 },
+            { kind: 'insert', incomingRowId: 'r-2', destinationRow: 4 },
           ],
         },
+        rejectedRows: [{
+          sourceRowNumber: 10,
+          originalRelevantFields: { source_id: 3 },
+          errorField: 'source_id',
+          invalidValue: 3,
+          rejectionReason: 'invalid',
+          failedRuleOrTransform: 'required',
+        }],
         validationResult: { isValid: true, issues: [] },
       },
     });
 
-    expect(messages).toContainEqual(expect.objectContaining({
-      type: 'ERROR',
-      operationId: 'export-large',
-      message: expect.stringContaining('exceeds the worker row budget'),
-    }));
+    expect(messages).toContainEqual({
+      type: 'PROGRESS', operationId: 'export-large', completed: 1, total: 3, phase: 'export',
+    });
+    expect(messages).toContainEqual({ type: 'CANCELLED', operationId: 'export-large' });
     expect(messages.some((message) => message.type === 'RESULT' && message.operationId === 'export-large')).toBe(false);
   });
 
-  it('blocks a plan-write request larger than its configured row budget before planning', async () => {
+  it('processes incoming and existing plan rows in cancellable batches', async () => {
     const messages: WorkerResponse[] = [];
-    const dispatcher = createDataWorkerDispatcher((message) => messages.push(message));
+    const dispatcher = createDataWorkerDispatcher((message) => {
+      messages.push(message);
+      if (message.type === 'PROGRESS' && message.operationId === 'plan-large' && message.phase === 'plan' && message.completed === 1) {
+        dispatcher.cancel('plan-large');
+      }
+    });
     const input = dataset([
       row('r-1', 2, { name__1: 'Ana' }),
       row('r-2', 3, { name__1: 'Bia' }),
@@ -301,16 +371,19 @@ describe('data worker dispatcher', () => {
       input: {
         mode: 'append',
         incoming: input,
-        existing: dataset([]),
+        existing: dataset([
+          row('existing-1', 2, { name__1: 'Old Ana' }),
+          row('existing-2', 3, { name__1: 'Old Bia' }),
+          row('existing-3', 4, { name__1: 'Old Caio' }),
+        ]),
         destination: { headerRow: 1, dataStartRow: 2 },
       },
     });
 
-    expect(messages).toContainEqual(expect.objectContaining({
-      type: 'ERROR',
-      operationId: 'plan-large',
-      message: expect.stringContaining('exceeds the worker row budget'),
-    }));
+    expect(messages).toContainEqual({
+      type: 'PROGRESS', operationId: 'plan-large', completed: 1, total: 5, phase: 'plan',
+    });
+    expect(messages).toContainEqual({ type: 'CANCELLED', operationId: 'plan-large' });
     expect(messages.some((message) => message.type === 'RESULT' && message.operationId === 'plan-large')).toBe(false);
   });
 });

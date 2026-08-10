@@ -44,6 +44,19 @@ export interface ExportInput {
   reviewedRiskCodes?: readonly string[];
 }
 
+export type ExportBatchPhase = 'expansion' | 'write' | 'rejected';
+
+export interface ExportBatchProgress {
+  completed: number;
+  total: number;
+  phase: ExportBatchPhase;
+}
+
+export interface ExportBatchOptions {
+  batchSize: number;
+  onProgress(progress: ExportBatchProgress): Promise<void> | void;
+}
+
 export class ExportCompatibilityError extends Error {
   constructor(public readonly risks: ExportRisk[]) {
     super(risks.map((risk) => risk.message).join('; '));
@@ -158,7 +171,7 @@ export async function scanExportRisks(input: ExportInput): Promise<ExportRisk[]>
   return risks;
 }
 
-export async function exportWorkbook(input: ExportInput): Promise<Blob> {
+export async function exportWorkbook(input: ExportInput, options?: ExportBatchOptions): Promise<Blob> {
   const risks = await scanExportRisks(input);
   const reviewed = new Set(input.reviewedRiskCodes ?? []);
   const blockers = risks.filter(
@@ -177,6 +190,26 @@ export async function exportWorkbook(input: ExportInput): Promise<Blob> {
     input.destination.dataStartRow - 1,
     ...writeActions.map(({ destinationRow }) => destinationRow),
   );
+  const destinationRange = parseRange(input.destination.range);
+  const expansionRows = Math.max(0, maxDestinationRow - destinationRange.endRow);
+  const writeRows = input.writePlan.clears.length
+    + input.writePlan.inserts.length
+    + input.writePlan.updates.length;
+  const rejectedRows = input.rejectedRows?.length ?? 0;
+  const totalWorkRows = expansionRows + writeRows + rejectedRows;
+
+  if (options) assertExportBatchSize(options.batchSize);
+  const reportProgress = options
+    ? (phase: ExportBatchPhase, completed: number) => options.onProgress({
+      completed: phase === 'expansion'
+        ? completed
+        : phase === 'write'
+          ? expansionRows + completed
+          : expansionRows + writeRows + completed,
+      total: totalWorkRows,
+      phase,
+    })
+    : undefined;
 
   await expandDestination(working, {
     worksheetPath: sheet.path,
@@ -188,9 +221,11 @@ export async function exportWorkbook(input: ExportInput): Promise<Blob> {
       maxDestinationRow - input.destination.dataStartRow + 1,
     ),
     ...(input.destination.tablePath ? { tablePath: input.destination.tablePath } : {}),
+  }, options && {
+    batchSize: options.batchSize,
+    onProgress: ({ completed }) => reportProgress?.('expansion', completed),
   });
 
-  const destinationRange = parseRange(input.destination.range);
   const targetLastRow = Math.max(destinationRange.endRow, maxDestinationRow);
   if (input.destination.definedName && targetLastRow > destinationRange.endRow) {
     updateDefinedName(
@@ -204,16 +239,23 @@ export async function exportWorkbook(input: ExportInput): Promise<Blob> {
   const worksheet = decode(working.readPart(sheet.path));
   working.updatePart(
     sheet.path,
-    applyWritePlan(
+    await applyWritePlan(
       worksheet,
       input,
       resolveMappings(input),
       invalidRowIds,
+      options && {
+        batchSize: options.batchSize,
+        onProgress: ({ completed }) => reportProgress?.('write', completed),
+      },
     ),
   );
 
   if ((input.rejectedRows?.length ?? 0) > 0) {
-    await addRejectedSheet(working, input.rejectedRows ?? []);
+    await addRejectedSheet(working, input.rejectedRows ?? [], options && {
+      batchSize: options.batchSize,
+      onProgress: ({ completed }) => reportProgress?.('rejected', completed),
+    });
   }
 
   return new Blob([await working.emit()], { type: XLSX_MIME });
@@ -613,31 +655,92 @@ function applyWritePlan(
   input: ExportInput,
   mappings: readonly ResolvedMapping[],
   invalidRowIds: ReadonlySet<string>,
-): string {
+  options?: ExportBatchOptions,
+): Promise<string> {
   let result = worksheet;
-  for (const clear of input.writePlan.clears) {
+  const processOperation = (operation: { destinationRow: number; values?: Record<string, CellValue> }) => {
     for (const mapping of mappings) {
       result = writeWorksheetCell(
         result,
-        clear.destinationRow,
+        operation.destinationRow,
         mapping.destinationColumn,
-        undefined,
+        operation.values === undefined ? undefined : operation.values[mapping.sourceColumnId] ?? null,
         input.destination.templateRow,
       );
     }
-  }
-  for (const action of validWriteActions(input.writePlan, invalidRowIds)) {
-    for (const mapping of mappings) {
-      result = writeWorksheetCell(
-        result,
-        action.destinationRow,
-        mapping.destinationColumn,
-        action.values[mapping.sourceColumnId] ?? null,
-        input.destination.templateRow,
-      );
+  };
+  if (!options) {
+    for (const clear of input.writePlan.clears) processOperation({ destinationRow: clear.destinationRow });
+    for (const action of validWriteActions(input.writePlan, invalidRowIds)) {
+      processOperation({ destinationRow: action.destinationRow, values: action.values });
     }
+    return Promise.resolve(result);
   }
-  return result;
+  return processExportWritePlan(input, invalidRowIds, options, processOperation).then(() => result);
+}
+
+async function processExportWritePlan(
+  input: ExportInput,
+  invalidRowIds: ReadonlySet<string>,
+  options: ExportBatchOptions,
+  processRow: (row: { destinationRow: number; values?: Record<string, CellValue> }) => void,
+): Promise<void> {
+  const total = input.writePlan.clears.length
+    + input.writePlan.inserts.length
+    + input.writePlan.updates.length;
+  let completed = 0;
+  completed = await processExportRows(
+    input.writePlan.clears,
+    completed,
+    total,
+    options,
+    (clear) => processRow({ destinationRow: clear.destinationRow }),
+  );
+  completed = await processExportRows(
+    input.writePlan.inserts,
+    completed,
+    total,
+    options,
+    (action) => {
+      if (!invalidRowIds.has(action.incomingRowId)) {
+        processRow({ destinationRow: action.destinationRow, values: action.values });
+      }
+    },
+  );
+  await processExportRows(
+    input.writePlan.updates,
+    completed,
+    total,
+    options,
+    (action) => {
+      if (!invalidRowIds.has(action.incomingRowId)) {
+        processRow({ destinationRow: action.destinationRow, values: action.values });
+      }
+    },
+  );
+}
+
+async function processExportRows<T>(
+  rows: readonly T[],
+  initialCompleted: number,
+  total: number,
+  options: ExportBatchOptions,
+  processRow: (row: T) => void,
+): Promise<number> {
+  let completed = initialCompleted;
+  for (let start = 0; start < rows.length; start += options.batchSize) {
+    const end = Math.min(rows.length, start + options.batchSize);
+    for (let index = start; index < end; index += 1) processRow(rows[index]);
+    completed += end - start;
+    await options.onProgress({ completed, total, phase: 'write' });
+  }
+  return completed;
+}
+
+function assertExportBatchSize(batchSize: number): void {
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1) {
+    throw new RangeError('batchSize must be a positive whole number');
+  }
 }
 
 function writeWorksheetCell(
