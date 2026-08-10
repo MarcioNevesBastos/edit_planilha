@@ -104,6 +104,7 @@ interface ActiveOperation {
 }
 
 interface PendingOperation {
+  operationId?: string;
   onResult(result: WorkerResult): void;
   onCancelled?(): void;
   onError?(message: string): void;
@@ -219,6 +220,48 @@ function acceptedMappings(mappings: readonly ReviewedMapping[]) {
   }));
 }
 
+function reconcileMappings(
+  sourceColumns: readonly DatasetColumn[],
+  destinationColumns: readonly DatasetColumn[],
+  previous: readonly ReviewedMapping[],
+): ReviewedMapping[] {
+  const previousBySource = new Map(previous.map((mapping) => [mapping.sourceColumnId, mapping]));
+  return suggestMappings(sourceColumns, destinationColumns).map((suggestion) => {
+    const existing = previousBySource.get(suggestion.sourceColumnId);
+    if (existing) return existing;
+    return {
+      ...suggestion,
+      action: 'map' as const,
+      status: 'review-required' as const,
+    };
+  });
+}
+
+function changedSchema(previous: Dataset, next: Dataset): boolean {
+  return previous.columns.length !== next.columns.length
+    || previous.columns.some((column, index) => {
+      const nextColumn = next.columns[index];
+      return !nextColumn || column.id !== nextColumn.id || column.header !== nextColumn.header;
+    });
+}
+
+function duplicateDestinationIds(mappings: readonly ReviewedMapping[]): Set<string> {
+  const counts = new Map<string, number>();
+  for (const mapping of mappings) {
+    if (mapping.action === 'ignore' || mapping.destinationColumnId === null) continue;
+    counts.set(mapping.destinationColumnId, (counts.get(mapping.destinationColumnId) ?? 0) + 1);
+  }
+  return new Set([...counts].filter(([, count]) => count > 1).map(([columnId]) => columnId));
+}
+
+function acceptedMappedSourceIds(mappings: readonly ReviewedMapping[]): Set<string> {
+  return new Set(mappings
+    .filter(({ status, action, destinationColumnId }) => status === 'accepted'
+      && action !== 'ignore'
+      && destinationColumnId !== null)
+    .map(({ sourceColumnId }) => sourceColumnId));
+}
+
 function fixedMappingCommands(
   mappings: readonly ReviewedMapping[],
 ): Array<Extract<TransformCommand, { type: 'fixedValue' }>> {
@@ -289,16 +332,25 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   const [writePlan, setWritePlan] = useState<WritePlan | null>(null);
   const [focusTarget, setFocusTarget] = useState<{ rowId: string; columnId: string } | null>(null);
   const [activeOperation, setActiveOperation] = useState<ActiveOperation | null>(null);
+  const [preflightBusy, setPreflightBusy] = useState(false);
+  const workflowBusy = activeOperation !== null || preflightBusy;
   const [error, setError] = useState<string | null>(null);
   const [exported, setExported] = useState(false);
   const workerRef = useRef<WorkflowWorker | null>(null);
   const pendingOperationRef = useRef<PendingOperation | null>(null);
+  const preflightRef = useRef<string | null>(null);
   const operationCounter = useRef(0);
   const commandHistory = useRef<CommandHistory>({ past: [], future: [] });
 
   const mappings = session.mappings as ReviewedMapping[];
   const commands = session.transforms as TransformCommand[];
   const userRules = session.validationRules as ValidationRule[];
+  const duplicateMappings = useMemo(() => duplicateDestinationIds(mappings), [mappings]);
+  const acceptedMappedColumns = useMemo(() => acceptedMappedSourceIds(mappings), [mappings]);
+  const availableKeyColumns = useMemo(
+    () => session.dataset?.columns.filter(({ id }) => acceptedMappedColumns.has(id)) ?? [],
+    [acceptedMappedColumns, session.dataset],
+  );
   const detectedRules = useMemo(() => session.dataset && templateDataset
     ? detectedValidationRules(session.dataset.columns, templateDataset.columns, mappings)
     : [], [mappings, session.dataset, templateDataset]);
@@ -308,6 +360,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
     workerRef.current = worker;
     worker.onmessage = ({ data }) => {
       const pending = pendingOperationRef.current;
+      if (!pending || pending.operationId !== data.operationId) return;
       setActiveOperation((current) => {
         if (!current || current.operationId !== data.operationId) return current;
         if (data.type === 'PROGRESS') {
@@ -315,7 +368,6 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         }
         return null;
       });
-      if (!pending) return;
       if (data.type === 'RESULT') {
         pendingOperationRef.current = null;
         pending.onResult(data.result);
@@ -338,14 +390,18 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
     request: WorkerRequest,
     label: string,
     pending: PendingOperation,
-  ) => {
+  ): boolean => {
     const worker = workerRef.current;
     if (!worker) {
       setError('Worker de processamento indisponível.');
-      return;
+      return false;
+    }
+    if (pendingOperationRef.current) {
+      setError('Já existe uma operação de processamento em andamento.');
+      return false;
     }
     setError(null);
-    pendingOperationRef.current = pending;
+    pendingOperationRef.current = { ...pending, operationId: request.operationId };
     setActiveOperation({
       operationId: request.operationId,
       label,
@@ -354,9 +410,24 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
       phase: '',
     });
     worker.postMessage(request, transferablesForRequest(request));
+    return true;
   }, []);
 
   const operationId = useCallback((prefix: string) => `${prefix}-${++operationCounter.current}`, []);
+
+  const beginPreflight = useCallback(() => {
+    if (preflightRef.current) return null;
+    const id = operationId('preflight');
+    preflightRef.current = id;
+    setPreflightBusy(true);
+    return id;
+  }, [operationId]);
+
+  const finishPreflight = useCallback((id: string) => {
+    if (preflightRef.current !== id) return;
+    preflightRef.current = null;
+    setPreflightBusy(false);
+  }, []);
 
   const invalidateAfterSource = useCallback(() => {
     store.setState({ mappings: [], transforms: [], validationRules: [] });
@@ -367,65 +438,80 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
     setKeyColumnIds([]);
   }, [store]);
 
-  const importSourceFile = useCallback(async (file: File, sheetName?: string) => {
-    const stableBuffer = await file.arrayBuffer();
-    const requestBuffer = stableBuffer.slice(0);
-    const id = operationId('source');
-    runOperation({
-      type: 'IMPORT_SOURCE',
-      operationId: id,
-      source: { name: file.name, buffer: requestBuffer, mediaType: file.type },
-      options: sheetName ? { sheetName } : undefined,
-    }, 'Importando origem', {
-      onResult: (result) => {
-        if (result.type !== 'IMPORT_SOURCE') return;
-        invalidateAfterSource();
-        const refreshedMappings: ReviewedMapping[] = templateDataset
-          ? suggestMappings(result.dataset.columns, templateDataset.columns)
-            .map((mapping) => ({ ...mapping, action: 'map' }))
-          : [];
-        setBaseDataset(result.dataset);
-        setPendingSourceFile(null);
-        setSourceSheets([]);
-        store.setState({
-          sourceFileMetadata: metadata(file),
-          sourceFileBuffer: stableBuffer,
-          selectedSheets: { ...store.getState().selectedSheets, source: sheetName ?? null },
-          dataset: result.dataset,
-          mappings: refreshedMappings,
-        });
-      },
-    });
-  }, [invalidateAfterSource, operationId, runOperation, store, templateDataset]);
+  const importSourceFile = useCallback(async (file: File, sheetName?: string, preflightId?: string) => {
+    const id = preflightId ?? beginPreflight();
+    if (!id) return;
+    try {
+      const stableBuffer = await file.arrayBuffer();
+      if (preflightRef.current !== id) return;
+      const requestBuffer = stableBuffer.slice(0);
+      const workerOperationId = operationId('source');
+      finishPreflight(id);
+      runOperation({
+        type: 'IMPORT_SOURCE',
+        operationId: workerOperationId,
+        source: { name: file.name, buffer: requestBuffer, mediaType: file.type },
+        options: sheetName ? { sheetName } : undefined,
+      }, 'Importando origem', {
+        onResult: (result) => {
+          if (result.type !== 'IMPORT_SOURCE') return;
+          invalidateAfterSource();
+          const refreshedMappings: ReviewedMapping[] = templateDataset
+            ? reconcileMappings(result.dataset.columns, templateDataset.columns, mappings)
+            : [];
+          setBaseDataset(result.dataset);
+          setPendingSourceFile(null);
+          setSourceSheets([]);
+          store.setState({
+            sourceFileMetadata: metadata(file),
+            sourceFileBuffer: stableBuffer,
+            selectedSheets: { ...store.getState().selectedSheets, source: sheetName ?? null },
+            dataset: result.dataset,
+            mappings: refreshedMappings,
+          });
+        },
+      });
+    } finally {
+      finishPreflight(id);
+    }
+  }, [beginPreflight, finishPreflight, invalidateAfterSource, mappings, operationId, runOperation, store, templateDataset]);
 
   const selectSourceFile = useCallback(async (file: File) => {
     if (!['csv', 'xlsx'].includes(extension(file.name))) {
       setError('A origem deve ser um arquivo .xlsx ou .csv.');
       return;
     }
+    const preflightId = beginPreflight();
+    if (!preflightId) return;
     if (extension(file.name) === 'csv') {
-      await importSourceFile(file);
+      await importSourceFile(file, undefined, preflightId);
       return;
     }
     try {
       const sheets = await listSourceSheets(file);
+      if (preflightRef.current !== preflightId) return;
       setPendingSourceFile(file);
       setSourceSheets(sheets);
-      if (sheets.length === 1) await importSourceFile(file, sheets[0]);
+      if (sheets.length === 1) await importSourceFile(file, sheets[0], preflightId);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      finishPreflight(preflightId);
     }
-  }, [importSourceFile]);
+  }, [beginPreflight, finishPreflight, importSourceFile]);
 
   const selectTemplateFile = useCallback(async (file: File) => {
     if (extension(file.name) !== 'xlsx') {
       setError('O modelo deve ser um arquivo .xlsx.');
       return;
     }
+    const preflightId = beginPreflight();
+    if (!preflightId) return;
     try {
       setError(null);
       const buffer = await file.arrayBuffer();
       const index = await indexWorkbook(await openOoxmlPackage(buffer.slice(0)));
+      if (preflightRef.current !== preflightId) return;
       setTemplateIndex(index);
       setDestinationCandidates([]);
       setSelectedDestination(null);
@@ -433,6 +519,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
       setValidationResult(null);
       setWritePlan(null);
       setExported(false);
+      setKeyColumnIds([]);
       store.setState({
         templateMetadata: metadata(file),
         templateFileBuffer: buffer,
@@ -442,8 +529,10 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
       });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      finishPreflight(preflightId);
     }
-  }, [store]);
+  }, [beginPreflight, finishPreflight, store]);
 
   const selectTemplateSheet = useCallback((sheetName: string) => {
     if (!templateIndex) return;
@@ -453,6 +542,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
     setValidationResult(null);
     setWritePlan(null);
     setExported(false);
+    setKeyColumnIds([]);
     store.setState({
       selectedSheets: { ...store.getState().selectedSheets, template: sheetName },
       mappings: [],
@@ -477,6 +567,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
       setValidationResult(null);
       setWritePlan(null);
       setExported(false);
+      setKeyColumnIds([]);
       store.setState({ mappings: suggestions, validationRules: [] });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -499,14 +590,22 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
       onResult: (result) => {
         if (result.type !== 'APPLY_TRANSFORMS') return;
         historyUpdate();
-        store.setState({ transforms: nextCommands, dataset: result.dataset });
+        const schemaChanged = baseDataset ? changedSchema(baseDataset, result.dataset) : false;
+        store.setState({
+          transforms: nextCommands,
+          dataset: result.dataset,
+          ...(schemaChanged && templateDataset
+            ? { mappings: reconcileMappings(result.dataset.columns, templateDataset.columns, mappings) }
+            : {}),
+        });
         setValidationResult(null);
         setWritePlan(null);
+        if (schemaChanged) setKeyColumnIds([]);
         setExported(false);
         after?.(result.dataset);
       },
     });
-  }, [baseDataset, operationId, runOperation, store]);
+  }, [baseDataset, mappings, operationId, runOperation, store, templateDataset]);
 
   const replaceCommands = useCallback((nextCommands: TransformCommand[]) => {
     const previous = [...commands];
@@ -609,7 +708,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         incoming,
         existing: mapExistingForPlanning(templateDataset, incoming, mappings),
         destination: { headerRow: rows.headerRow, dataStartRow: rows.dataStartRow },
-        ...(writeMode === 'update' ? { keyColumnIds } : {}),
+        ...(writeMode === 'update' ? { keyColumnIds: keyColumnIds.filter((id) => acceptedMappedColumns.has(id)) } : {}),
       },
     }, 'Calculando resumo', {
       onResult: (result) => {
@@ -620,7 +719,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         setHighestVisited((current) => Math.max(current, 8));
       },
     });
-  }, [keyColumnIds, mappings, operationId, runOperation, selectedDestination, session.dataset, templateDataset, writeMode]);
+  }, [acceptedMappedColumns, keyColumnIds, mappings, operationId, runOperation, selectedDestination, session.dataset, templateDataset, writeMode]);
 
   const exportWorkbook = useCallback(() => {
     if (!writePlan || !validationResult || !selectedDestination || !templateDataset || !templateIndex || !session.templateFileBuffer) return;
@@ -665,15 +764,18 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
       case 0: return session.dataset !== null;
       case 1: return session.templateFileBuffer !== null && session.selectedSheets.template !== null;
       case 2: return selectedDestination !== null;
-      case 3: return mappings.length > 0 && mappings.every(({ status }) => status === 'accepted');
+      case 3: return mappings.length > 0
+        && mappings.every(({ status }) => status === 'accepted')
+        && duplicateMappings.size === 0;
       case 4: return true;
       case 5: return validationResult !== null;
       case 6: return true;
-      case 7: return writeMode !== 'update' || keyColumnIds.length > 0;
+      case 7: return writeMode !== 'update'
+        || (keyColumnIds.length > 0 && keyColumnIds.every((id) => acceptedMappedColumns.has(id)));
       case 8: return writePlan !== null;
       default: return false;
     }
-  }, [keyColumnIds.length, mappings, selectedDestination, session.dataset, session.selectedSheets.template, session.templateFileBuffer, stepIndex, validationResult, writeMode, writePlan]);
+  }, [acceptedMappedColumns, duplicateMappings.size, keyColumnIds, mappings, selectedDestination, session.dataset, session.selectedSheets.template, session.templateFileBuffer, stepIndex, validationResult, writeMode, writePlan]);
 
   const advance = () => {
     if (!canAdvance || activeOperation) return;
@@ -706,7 +808,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         <button
           type="button"
           className="text-button"
-          disabled={activeOperation !== null}
+          disabled={workflowBusy}
           onClick={() => {
             store.resetSession();
             setStepIndex(0);
@@ -732,7 +834,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         steps={STEPS}
         currentIndex={stepIndex}
         highestVisitedIndex={highestVisited}
-        disabled={activeOperation !== null}
+        disabled={workflowBusy}
         onSelect={setStepIndex}
       />
 
@@ -765,14 +867,14 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
                 actionLabel="Selecionar arquivo de origem"
                 description="Formatos aceitos: .xlsx e .csv"
                 fileName={pendingSourceFile?.name ?? session.sourceFileMetadata?.name}
-                disabled={activeOperation !== null}
+                disabled={workflowBusy}
                 onSelect={(file) => void selectSourceFile(file)}
               />
               {pendingSourceFile && sourceSheets.length > 1 ? (
                 <label className="field">Aba de origem
                   <select
                     defaultValue=""
-                    disabled={activeOperation !== null}
+                    disabled={workflowBusy}
                     onChange={(event) => void importSourceFile(pendingSourceFile, event.currentTarget.value)}
                   >
                     <option value="" disabled>Selecione uma aba</option>
@@ -791,14 +893,14 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
                 actionLabel="Selecionar arquivo modelo"
                 description="O arquivo original permanecerá intacto. Formato aceito: .xlsx"
                 fileName={session.templateMetadata?.name}
-                disabled={activeOperation !== null}
+                disabled={workflowBusy}
                 onSelect={(file) => void selectTemplateFile(file)}
               />
               {templateIndex ? (
                 <label className="field">Aba do modelo
                   <select
                     value={session.selectedSheets.template ?? ''}
-                    disabled={activeOperation !== null}
+                    disabled={workflowBusy}
                     onChange={(event) => selectTemplateSheet(event.currentTarget.value)}
                   >
                     <option value="" disabled>Selecione uma aba</option>
@@ -833,24 +935,30 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
           ) : null}
 
           {stepIndex === 3 && session.dataset && templateDataset ? (
-            <MappingGrid
-              sourceColumns={session.dataset.columns}
-              destinationColumns={templateDataset.columns}
-              mappings={mappings}
-              disabled={activeOperation !== null}
-              onChange={(next) => {
-                store.setState({ mappings: next });
-                setValidationResult(null);
-                setWritePlan(null);
-              }}
-            />
+            <>
+              {duplicateMappings.size > 0 ? (
+                <p className="error-banner" role="alert">Conflito: destinos duplicados precisam ser corrigidos antes de continuar.</p>
+              ) : null}
+              <MappingGrid
+                sourceColumns={session.dataset.columns}
+                destinationColumns={templateDataset.columns}
+                mappings={mappings}
+                disabled={workflowBusy}
+                onChange={(next) => {
+                  store.setState({ mappings: next });
+                  setKeyColumnIds([]);
+                  setValidationResult(null);
+                  setWritePlan(null);
+                }}
+              />
+            </>
           ) : null}
 
           {stepIndex === 4 && session.dataset ? (
             <TransformationEditor
               dataset={session.dataset}
               commands={commands}
-              busy={activeOperation !== null}
+              busy={workflowBusy}
               canUndo={commandHistory.current.past.length > 0}
               canRedo={commandHistory.current.future.length > 0}
               onReplace={replaceCommands}
@@ -865,7 +973,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
               detectedRules={detectedRules}
               userRules={userRules}
               issues={validationResult?.issues ?? []}
-              disabled={activeOperation !== null}
+              disabled={workflowBusy}
               onAddRule={(rule) => {
                 store.setState({ validationRules: [...userRules, rule] });
                 setValidationResult(null);
@@ -888,7 +996,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
               dataset={session.dataset}
               issues={validationResult?.issues ?? []}
               focusTarget={focusTarget}
-              busy={activeOperation !== null}
+              busy={workflowBusy}
               onEdit={editCell}
             />
           ) : null}
@@ -918,7 +1026,8 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
               {writeMode === 'update' ? (
                 <fieldset className="key-columns">
                   <legend>Colunas-chave revisadas</legend>
-                  {session.dataset.columns.map((column) => (
+                  {availableKeyColumns.length === 0 ? <p>Nenhuma coluna mapeada e revisada está disponível.</p> : null}
+                  {availableKeyColumns.map((column) => (
                     <label key={column.id}>
                       <input
                         type="checkbox"
@@ -937,7 +1046,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
 
           {stepIndex === 8 && writePlan ? (
             <>
-              <ExportSummary plan={writePlan} validationRejected={validationResult?.issues.length ?? 0} />
+              <ExportSummary plan={writePlan} validationIssues={validationResult?.issues ?? []} />
               <p className="summary-note">Modo selecionado: <strong>{writeMode === 'replace' ? 'Substituir' : writeMode === 'append' ? 'Acrescentar' : 'Atualizar'}</strong></p>
             </>
           ) : null}
@@ -950,7 +1059,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
               <button
                 type="button"
                 className="primary-button export-button"
-                disabled={activeOperation !== null || !writePlan || !validationResult}
+                disabled={workflowBusy || !writePlan || !validationResult}
                 onClick={exportWorkbook}
               >
                 Exportar .xlsx
@@ -963,7 +1072,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
           <button
             type="button"
             className="secondary-button"
-            disabled={stepIndex === 0 || activeOperation !== null}
+            disabled={stepIndex === 0 || workflowBusy}
             onClick={() => setStepIndex((current) => Math.max(0, current - 1))}
           >
             Voltar
@@ -972,7 +1081,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
             <button
               type="button"
               className="primary-button"
-              disabled={!canAdvance || activeOperation !== null}
+              disabled={!canAdvance || workflowBusy}
               onClick={advance}
             >
               Avançar

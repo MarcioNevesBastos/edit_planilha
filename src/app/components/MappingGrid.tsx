@@ -31,6 +31,12 @@ export function MappingGrid({
   disabled = false,
   onChange,
 }: MappingGridProps) {
+  const destinationCounts = new Map<string, number>();
+  for (const mapping of mappings) {
+    if (mapping.action === 'ignore' || mapping.destinationColumnId === null) continue;
+    destinationCounts.set(mapping.destinationColumnId, (destinationCounts.get(mapping.destinationColumnId) ?? 0) + 1);
+  }
+
   const update = (sourceColumnId: string, patch: Partial<ReviewedMapping>) => {
     onChange(mappings.map((mapping) => mapping.sourceColumnId === sourceColumnId
       ? { ...mapping, ...patch }
@@ -48,6 +54,9 @@ export function MappingGrid({
       {mappings.map((mapping) => {
         const source = sourceColumns.find(({ id }) => id === mapping.sourceColumnId);
         if (!source) return null;
+        const duplicateDestination = mapping.destinationColumnId !== null
+          && mapping.action !== 'ignore'
+          && (destinationCounts.get(mapping.destinationColumnId) ?? 0) > 1;
         return (
           <div className="mapping-row" role="row" key={mapping.sourceColumnId}>
             <strong role="cell">{source.header}</strong>
@@ -84,8 +93,10 @@ export function MappingGrid({
               {confidenceLabels[mapping.confidence]} · {Math.round(mapping.score * 100)}%
             </span>
             <div role="cell" className="mapping-actions">
-              <span className={mapping.status === 'accepted' ? 'status-ok' : 'status-review'}>
-                {mapping.status === 'accepted' ? 'Revisado' : 'Revisão necessária'}
+              <span className={duplicateDestination || mapping.status !== 'accepted' ? 'status-review' : 'status-ok'}>
+                {duplicateDestination
+                  ? 'Conflito: destino duplicado'
+                  : mapping.status === 'accepted' ? 'Revisado' : 'Revisão necessária'}
               </span>
               <button
                 type="button"

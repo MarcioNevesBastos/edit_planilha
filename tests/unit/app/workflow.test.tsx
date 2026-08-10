@@ -3,11 +3,13 @@
 import '@testing-library/jest-dom/vitest';
 import { readFile } from 'node:fs/promises';
 import React from 'react';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App, type WorkflowWorker } from '../../../src/app/App';
 import { DataGrid } from '../../../src/app/components/DataGrid';
+import { ExportSummary } from '../../../src/app/components/ExportSummary';
+import { MappingGrid, type ReviewedMapping } from '../../../src/app/components/MappingGrid';
 import { applyTransform } from '../../../src/domain/transforms/apply-transform';
 import type { Dataset } from '../../../src/domain/dataset/types';
 import { planWrite } from '../../../src/domain/merge/plan-write';
@@ -111,14 +113,29 @@ class FakeWorker implements WorkflowWorker {
   }
 }
 
+class ControlledWorker implements WorkflowWorker {
+  public onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null = null;
+  public readonly requests: WorkerRequest[] = [];
+
+  public postMessage(message: WorkerInboundMessage): void {
+    if (message.type !== 'CANCEL_OPERATION') this.requests.push(message);
+  }
+
+  public emit(response: WorkerResponse): void {
+    this.onmessage?.({ data: response } as MessageEvent<WorkerResponse>);
+  }
+
+  public terminate(): void {}
+}
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
 });
 
-async function templateFile(): Promise<File> {
+async function templateFile(name = 'modelo.xlsx'): Promise<File> {
   const bytes = await readFile('src/test-fixtures/workbooks/template-structured.xlsx');
-  return new File([bytes], 'modelo.xlsx', {
+  return new File([bytes], name, {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   });
 }
@@ -184,6 +201,168 @@ describe('workflow navigation', () => {
     await user.click(screen.getByRole('button', { name: 'Avançar' }));
     expect(screen.getByRole('table', { name: 'Revisão de mapeamentos' })).toBeInTheDocument();
     expect(screen.getByText('Revisão necessária')).toBeInTheDocument();
+  });
+
+  it('ignores a stale worker response after a source reselection', async () => {
+    const user = userEvent.setup();
+    const worker = new ControlledWorker();
+    render(<App workerFactory={() => worker} />);
+
+    await user.upload(
+      screen.getByLabelText('Selecionar arquivo de origem'),
+      new File(['ID;Nome\n1;Ana\n'], 'primeira.csv', { type: 'text/csv' }),
+    );
+    await waitFor(() => expect(worker.requests).toHaveLength(1));
+    const firstRequest = worker.requests[0];
+    worker.emit({ type: 'RESULT', operationId: firstRequest.operationId, result: { type: 'IMPORT_SOURCE', dataset: sourceDataset } });
+    await screen.findByText('primeira.csv');
+
+    await user.upload(
+      screen.getByLabelText('Selecionar arquivo de origem'),
+      new File(['ID;Nome\n2;Bruno\n'], 'segunda.csv', { type: 'text/csv' }),
+    );
+    await waitFor(() => expect(worker.requests).toHaveLength(2));
+    const secondRequest = worker.requests[1];
+    worker.emit({ type: 'RESULT', operationId: firstRequest.operationId, result: { type: 'IMPORT_SOURCE', dataset: sourceDataset } });
+    expect(screen.getByText('primeira.csv')).toBeInTheDocument();
+    worker.emit({ type: 'RESULT', operationId: secondRequest.operationId, result: { type: 'IMPORT_SOURCE', dataset: sourceDataset } });
+    await screen.findByText('segunda.csv');
+  });
+
+  it('clears dependent destination state when replacing the model', async () => {
+    const user = userEvent.setup();
+    const worker = new FakeWorker();
+    render(<App workerFactory={() => worker} />);
+
+    await importSource(user);
+    await chooseTemplate(user);
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByLabelText(/TabelaDestino/));
+    await user.click(screen.getByRole('button', { name: 'Origem' }));
+    await user.click(screen.getByRole('button', { name: 'Modelo' }));
+    await user.upload(screen.getByLabelText('Selecionar arquivo modelo'), await templateFile('modelo-novo.xlsx'));
+
+    expect(screen.getByRole('button', { name: 'Avançar' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Origem' }));
+    expect(screen.getByText('origem.csv')).toBeInTheDocument();
+    expect(screen.queryByText('Dados Modelo selecionada')).not.toBeInTheDocument();
+  });
+
+  it('requires mapping review after a schema-changing transform adds a column', async () => {
+    const user = userEvent.setup();
+    const worker = new FakeWorker();
+    render(<App workerFactory={() => worker} />);
+
+    await importSource(user);
+    await chooseTemplate(user);
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByLabelText(/TabelaDestino/));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByRole('button', { name: 'Ignorar Nome' }));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+
+    await user.selectOptions(screen.getByLabelText('Tipo de transformação'), 'calculatedColumn');
+    await user.clear(screen.getByLabelText('Nome da nova coluna'));
+    await user.type(screen.getByLabelText('Nome da nova coluna'), 'Código');
+    await user.click(screen.getByRole('button', { name: 'Adicionar transformação' }));
+    await user.click(screen.getByRole('button', { name: 'Mapeamento' }));
+
+    expect(screen.getByText('Código')).toBeInTheDocument();
+    expect(screen.getAllByText('Revisão necessária').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Avançar' })).toBeDisabled();
+  });
+
+  it('blocks duplicate destinations even after both mappings are accepted', async () => {
+    const user = userEvent.setup();
+    const worker = new FakeWorker();
+    render(<App workerFactory={() => worker} />);
+
+    await importSource(user);
+    await chooseTemplate(user);
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByLabelText(/TabelaDestino/));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.selectOptions(screen.getByLabelText('Destino para Nome'), 'id__1');
+    await user.click(screen.getByRole('button', { name: 'Aceitar Nome' }));
+
+    expect(screen.getAllByText(/Conflito: destino duplicado/)).not.toHaveLength(0);
+    expect(screen.getByRole('button', { name: 'Avançar' })).toBeDisabled();
+  });
+
+  it('offers only accepted mapped columns as update keys', async () => {
+    const user = userEvent.setup();
+    const worker = new FakeWorker();
+    render(<App workerFactory={() => worker} />);
+
+    await importSource(user);
+    await chooseTemplate(user);
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByLabelText(/TabelaDestino/));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByRole('button', { name: 'Ignorar Nome' }));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByRole('button', { name: 'Executar validação' }));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByRole('radio', { name: /Atualizar/ }));
+
+    expect(screen.getByRole('checkbox', { name: 'ID' })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Nome' })).not.toBeInTheDocument();
+  });
+});
+
+describe('mapping and summary invariants', () => {
+  it('surfaces duplicate destination conflicts in the mapping grid', () => {
+    const sourceColumns = sourceDataset.columns;
+    const destinationColumns = templateDataset.columns;
+    const mappings: ReviewedMapping[] = sourceColumns.map((column) => ({
+      sourceColumnId: column.id,
+      destinationColumnId: 'id__1',
+      confidence: 'exact',
+      score: 1,
+      status: 'accepted',
+      action: 'map',
+    }));
+
+    render(<MappingGrid
+      sourceColumns={sourceColumns}
+      destinationColumns={destinationColumns}
+      mappings={mappings}
+      onChange={() => undefined}
+    />);
+
+    expect(screen.getAllByText('Conflito: destino duplicado')).toHaveLength(2);
+  });
+
+  it('counts effective actions and distinct rejected rows', () => {
+    render(<ExportSummary
+      plan={{
+        mode: 'update',
+        headerRow: 2,
+        clears: [],
+        inserts: [
+          { incomingRowId: 'row-1', destinationRow: 3, values: {} },
+          { incomingRowId: 'row-2', destinationRow: 4, values: {} },
+        ],
+        updates: [{ incomingRowId: 'row-3', existingRowId: 'existing-3', destinationRow: 5, values: {} }],
+        kept: [{ incomingRowId: 'row-4', existingRowId: 'existing-4', destinationRow: 6 }],
+        duplicates: [{ scope: 'incoming', keyColumnIds: ['id__1'], keyValues: [1], rowIds: ['row-5', 'row-5'] }],
+        rejected: [{ incomingRowId: 'row-5', reason: 'incoming-duplicate-key', keyColumnIds: ['id__1'], keyValues: [1] }],
+        assignments: [],
+      }}
+      validationIssues={[
+        { rowId: 'row-2', sourceRowNumber: 3, columnId: 'id__1', code: 'required', value: null, message: 'Obrigatório' },
+        { rowId: 'row-2', sourceRowNumber: 3, columnId: 'nome__1', code: 'type', value: null, message: 'Tipo' },
+        { rowId: 'row-6', sourceRowNumber: 7, columnId: 'id__1', code: 'required', value: null, message: 'Obrigatório' },
+      ]}
+    />);
+
+    expect(within(screen.getByText('Inseridos').parentElement as HTMLElement).getByText('1')).toBeInTheDocument();
+    expect(within(screen.getByText('Atualizados').parentElement as HTMLElement).getByText('1')).toBeInTheDocument();
+    expect(within(screen.getByText('Mantidos').parentElement as HTMLElement).getByText('1')).toBeInTheDocument();
+    expect(within(screen.getByText('Duplicados').parentElement as HTMLElement).getByText('1')).toBeInTheDocument();
+    expect(within(screen.getByText('Rejeitados').parentElement as HTMLElement).getByText('3')).toBeInTheDocument();
   });
 });
 
