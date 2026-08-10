@@ -235,22 +235,12 @@ function updateRangeAtInsertion(
   targetLastRow: number,
   additionalRows: number,
 ): CellRange {
-  if (rangesOverlapColumns(range, destination)) {
-    return expandRowsAtInsertion(
-      range,
-      destination.endRow,
-      targetLastRow,
-      additionalRows,
-    );
-  }
-  if (range.startRow > destination.endRow) {
-    return {
-      ...range,
-      startRow: range.startRow + additionalRows,
-      endRow: range.endRow + additionalRows,
-    };
-  }
-  return range;
+  return expandRowsAtInsertion(
+    range,
+    destination.endRow,
+    targetLastRow,
+    additionalRows,
+  );
 }
 
 function expandRowsAtInsertion(
@@ -310,11 +300,6 @@ function formatRange(range: CellRange): string {
 
 function normalizeRange(value: string): string {
   return formatRange(parseRange(value));
-}
-
-function rangesOverlapColumns(left: CellRange, right: CellRange): boolean {
-  return columnNumber(left.startColumn) <= columnNumber(right.endColumn)
-    && columnNumber(right.startColumn) <= columnNumber(left.endColumn);
 }
 
 function columnNumber(letters: string): number {

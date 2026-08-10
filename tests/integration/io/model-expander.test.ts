@@ -65,7 +65,7 @@ describe('expandDestination', () => {
         )
         .replace(
           '<pageMargins',
-          '<autoFilter ref="Z10:Z12"/><dataValidations count="2"><dataValidation type="whole" sqref="A2:A4"><formula1>0</formula1></dataValidation><dataValidation type="whole" sqref="Z10:Z12"><formula1>0</formula1></dataValidation></dataValidations><pageMargins',
+          '<autoFilter ref="Z2:Z12"/><dataValidations count="3"><dataValidation type="whole" sqref="A2:A4"><formula1>0</formula1></dataValidation><dataValidation type="whole" sqref="Z10:Z12"><formula1>0</formula1></dataValidation><dataValidation type="whole" sqref="Z2:Z12"><formula1>0</formula1></dataValidation></dataValidations><pageMargins',
         ),
     );
 
@@ -84,6 +84,30 @@ describe('expandDestination', () => {
     expect(worksheet).toContain('<row r="6" ht="20"><c r="A6" s="3">');
     expect(worksheet).toContain('<c r="C6" s="4"><f>A6+1</f>');
     expect(worksheet).toContain('sqref="A2:A6"');
+    expect(worksheet).toContain('sqref="Z12:Z14"');
+    expect(worksheet).toContain('sqref="Z2:Z14"');
+    expect(worksheet).toContain('<autoFilter ref="Z2:Z14"/>');
+  });
+
+  it('moves disjoint validation and autofilter ranges below the insertion point', async () => {
+    pkg.updatePart(
+      'xl/worksheets/sheet2.xml',
+      textPart('xl/worksheets/sheet2.xml')
+        .replace(
+          '<pageMargins',
+          '<autoFilter ref="Z10:Z12"/><dataValidations count="1"><dataValidation type="whole" sqref="Z10:Z12"><formula1>0</formula1></dataValidation></dataValidations><pageMargins',
+        ),
+    );
+
+    await expandDestination(pkg, {
+      worksheetPath: 'xl/worksheets/sheet2.xml',
+      destinationRange: 'A2:C4',
+      dataStartRow: 2,
+      templateRow: 4,
+      requiredDataRows: 5,
+    });
+
+    const worksheet = textPart('xl/worksheets/sheet2.xml');
     expect(worksheet).toContain('sqref="Z12:Z14"');
     expect(worksheet).toContain('<autoFilter ref="Z12:Z14"/>');
   });
