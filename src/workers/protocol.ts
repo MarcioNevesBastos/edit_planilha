@@ -7,7 +7,7 @@ import type { ReadSourceOptions } from '../io/source/types';
 
 export const DEFAULT_WORKER_BATCH_SIZE = 1_000;
 
-export type WorkerPhase = 'import' | 'transform' | 'validate' | 'plan' | 'export';
+export type WorkerPhase = 'import' | 'transform' | 'validate' | 'validate-unique' | 'validate-unique-output' | 'plan' | 'export';
 
 interface WorkerRequestBase {
   operationId: string;
