@@ -1,20 +1,29 @@
 import React, { useState } from 'react';
-import type { DatasetColumn } from '../../domain/dataset/types';
-import type { ValidationIssue, ValidationRule } from '../../domain/validation/types';
+import type { Dataset, DatasetColumn } from '../../domain/dataset/types';
+import type { ConditionalMatrixRule, ValidationIssue, ValidationRule } from '../../domain/validation/types';
+import { ConditionalMatrixEditor } from './ConditionalMatrixEditor';
 
 interface ValidationPanelProps {
+  dataset: Dataset;
   columns: readonly DatasetColumn[];
   detectedRules: readonly ValidationRule[];
   userRules: readonly ValidationRule[];
   issues: readonly ValidationIssue[];
   disabled?: boolean;
   onAddRule(rule: ValidationRule): void;
+  onReplaceRule(index: number, rule: ValidationRule): void;
   onRemoveRule(index: number): void;
   onRun(): void;
   onSelectIssue(issue: ValidationIssue): void;
 }
 
 function ruleLabel(rule: ValidationRule, columns: readonly DatasetColumn[]): string {
+  if (rule.type === 'conditionalMatrix') {
+    const names = [...rule.keyColumnIds, ...rule.dependentColumnIds]
+      .map((id) => columns.find((column) => column.id === id)?.header ?? id)
+      .join(' + ');
+    return `${names}: matriz condicional`;
+  }
   const columnIds = rule.type === 'compositeUnique' ? rule.columnIds : [rule.columnId];
   const names = columnIds.map((id) => columns.find((column) => column.id === id)?.header ?? id).join(' + ');
   switch (rule.type) {
@@ -30,18 +39,41 @@ function ruleLabel(rule: ValidationRule, columns: readonly DatasetColumn[]): str
 }
 
 export function ValidationPanel({
+  dataset,
   columns,
   detectedRules,
   userRules,
   issues,
   disabled = false,
   onAddRule,
+  onReplaceRule,
   onRemoveRule,
   onRun,
   onSelectIssue,
 }: ValidationPanelProps) {
   const [columnId, setColumnId] = useState(columns[0]?.id ?? '');
   const [ruleType, setRuleType] = useState<'required' | 'unique'>('required');
+  const [matrixKeyColumnIds, setMatrixKeyColumnIds] = useState<string[]>(columns[0] ? [columns[0].id] : []);
+  const [matrixDependentColumnIds, setMatrixDependentColumnIds] = useState<string[]>(columns[1] ? [columns[1].id] : []);
+  const matrixRules = userRules.flatMap((rule, index) => rule.type === 'conditionalMatrix' ? [{ rule, index }] : []);
+  const simpleRules = userRules.flatMap((rule, index) => rule.type === 'conditionalMatrix' ? [] : [{ rule, index }]);
+
+  const toggleColumn = (columnIds: string[], setColumnIds: (ids: string[]) => void, id: string) => {
+    setColumnIds(columnIds.includes(id) ? columnIds.filter((current) => current !== id) : [...columnIds, id]);
+  };
+
+  const addMatrix = () => {
+    if (matrixKeyColumnIds.length === 0 || matrixDependentColumnIds.length === 0) return;
+    if (matrixKeyColumnIds.some((id) => matrixDependentColumnIds.includes(id))) return;
+    const matrix: ConditionalMatrixRule = {
+      type: 'conditionalMatrix',
+      id: `conditional-matrix-${userRules.length + 1}`,
+      keyColumnIds: matrixKeyColumnIds,
+      dependentColumnIds: matrixDependentColumnIds,
+      entries: [],
+    };
+    onAddRule(matrix);
+  };
 
   return (
     <div className="validation-layout">
@@ -67,12 +99,68 @@ export function ValidationPanel({
             Adicionar regra
           </button>
         </div>
-        <ul>{userRules.map((rule, index) => (
+        <ul>{simpleRules.map(({ rule, index }) => (
           <li key={`${rule.type}-${index}`}>
             {ruleLabel(rule, columns)}
             <button type="button" disabled={disabled} onClick={() => onRemoveRule(index)}>Remover</button>
           </li>
         ))}</ul>
+      </section>
+      <section className="panel-section conditional-matrices-section">
+        <h3>Validações condicionais</h3>
+        <p className="selection-note">Escolha as colunas que definem o contexto e as colunas que receberão regras.</p>
+        <div className="matrix-column-picker">
+          <fieldset>
+            <legend>Colunas-chave</legend>
+            {columns.map((column) => (
+              <label key={`matrix-key-${column.id}`}>
+                <input
+                  type="checkbox"
+                  checked={matrixKeyColumnIds.includes(column.id)}
+                  disabled={disabled}
+                  onChange={() => toggleColumn(matrixKeyColumnIds, setMatrixKeyColumnIds, column.id)}
+                />
+                {column.header}
+              </label>
+            ))}
+          </fieldset>
+          <fieldset>
+            <legend>Colunas dependentes</legend>
+            {columns.map((column) => (
+              <label key={`matrix-dependent-${column.id}`}>
+                <input
+                  type="checkbox"
+                  checked={matrixDependentColumnIds.includes(column.id)}
+                  disabled={disabled}
+                  onChange={() => toggleColumn(matrixDependentColumnIds, setMatrixDependentColumnIds, column.id)}
+                />
+                {column.header}
+              </label>
+            ))}
+          </fieldset>
+        </div>
+        <button
+          type="button"
+          disabled={disabled || matrixKeyColumnIds.length === 0 || matrixDependentColumnIds.length === 0 || matrixKeyColumnIds.some((id) => matrixDependentColumnIds.includes(id))}
+          onClick={addMatrix}
+        >
+          Adicionar matriz
+        </button>
+        {matrixRules.map(({ rule, index }) => (
+          <div className="conditional-matrix-card" key={rule.id ?? `matrix-${index}`}>
+            <div className="matrix-card-heading">
+              <strong>{ruleLabel(rule, columns)}</strong>
+              <button type="button" disabled={disabled} onClick={() => onRemoveRule(index)}>Remover matriz</button>
+            </div>
+            <ConditionalMatrixEditor
+              dataset={dataset}
+              columns={columns}
+              rule={rule}
+              disabled={disabled}
+              onChange={(next) => onReplaceRule(index, next)}
+            />
+          </div>
+        ))}
       </section>
       <div className="validation-run">
         <button type="button" className="primary-button" disabled={disabled} onClick={onRun}>Executar validação</button>
@@ -81,9 +169,9 @@ export function ValidationPanel({
       {issues.length > 0 ? (
         <section className="issue-list" aria-label="Erros de validação">
           {issues.map((issue) => (
-            <button type="button" key={`${issue.rowId}-${issue.columnId}-${issue.code}`} onClick={() => onSelectIssue(issue)}>
+            <button type="button" className={issue.severity === 'warning' ? 'warning-issue' : undefined} key={`${issue.rowId}-${issue.columnId}-${issue.code}`} onClick={() => onSelectIssue(issue)}>
               <span>Linha {issue.sourceRowNumber}</span>
-              <strong>{columns.find(({ id }) => id === issue.columnId)?.header ?? issue.columnId}</strong>
+              <strong>{issue.severity === 'warning' ? 'Aviso · ' : ''}{columns.find(({ id }) => id === issue.columnId)?.header ?? issue.columnId}</strong>
               <span>{issue.message}</span>
             </button>
           ))}

@@ -231,6 +231,14 @@ describe('exportWorkbook', () => {
         code: 'numberRange',
         value: -1,
         message: 'Quantidade deve ser positiva',
+      }, {
+        rowId: 'valid-insert',
+        sourceRowNumber: 8,
+        columnId: 'source_product',
+        code: 'conditional_no_match',
+        value: 'Apontador',
+        message: 'Contexto não cadastrado',
+        severity: 'warning',
       }],
     };
 
@@ -250,6 +258,7 @@ describe('exportWorkbook', () => {
 
     expect(worksheet).toContain('<c r="B4" t="inlineStr"><is><t>Caneta azul</t></is></c>');
     expect(worksheet).toContain('<c r="A6"><v>4</v></c>');
+    expect(worksheet).toContain('Apontador');
     expect(worksheet).not.toContain('NÃO EXPORTAR');
     expect(worksheet).not.toContain('<row r="7"><c r="A7"><v>5</v>');
     expect(textPart(exported, 'xl/worksheets/sheet3.xml')).toContain('NÃO EXPORTAR');

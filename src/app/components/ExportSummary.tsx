@@ -8,7 +8,9 @@ interface ExportSummaryProps {
 }
 
 export function ExportSummary({ plan, validationIssues }: ExportSummaryProps) {
-  const invalidRowIds = new Set(validationIssues.map(({ rowId }) => rowId));
+  const invalidRowIds = new Set(validationIssues
+    .filter(({ severity }) => (severity ?? 'error') === 'error')
+    .map(({ rowId }) => rowId));
   const planRejectedRowIds = new Set(plan.rejected.map(({ incomingRowId }) => incomingRowId));
   const isEffective = (rowId: string) => !invalidRowIds.has(rowId) && !planRejectedRowIds.has(rowId);
   const duplicateRowIds = new Set(plan.duplicates.flatMap(({ rowIds }) => rowIds));

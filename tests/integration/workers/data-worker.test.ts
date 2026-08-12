@@ -52,6 +52,47 @@ describe('data worker dispatcher', () => {
     expect(plan).toMatchObject({ result: { writePlan: { inserts: [{ destinationRow: 2 }] } } });
   });
 
+  it('validates conditional matrices in batches and preserves warning-only validity', async () => {
+    const messages: WorkerResponse[] = [];
+    const dispatcher = createDataWorkerDispatcher((message) => messages.push(message));
+    const input = dataset([
+      row('r-1', 2, { name__1: 'PJ', cnpj__1: null }),
+      row('r-2', 3, { name__1: 'PF', cnpj__1: null }),
+    ]);
+
+    await dispatcher.dispatch({
+      type: 'VALIDATE',
+      operationId: 'conditional-warning',
+      dataset: input,
+      rules: [{
+        type: 'conditionalMatrix',
+        keyColumnIds: ['name__1'],
+        dependentColumnIds: ['cnpj__1'],
+        entries: [{
+          conditions: { name__1: { operator: 'equals', value: 'PJ' } },
+          constraints: { cnpj__1: { type: 'required' } },
+        }],
+      }],
+      batchSize: 1,
+    });
+
+    expect(messages).toContainEqual(expect.objectContaining({
+      type: 'RESULT',
+      operationId: 'conditional-warning',
+      result: {
+        type: 'VALIDATE',
+        validationResult: expect.objectContaining({
+          isValid: true,
+          issues: expect.arrayContaining([
+            expect.objectContaining({ rowId: 'r-1', code: 'conditional_required', severity: 'warning' }),
+            expect.objectContaining({ rowId: 'r-2', code: 'conditional_no_match', severity: 'warning' }),
+          ]),
+        }),
+      },
+    }));
+    expect(messages.some((message) => message.type === 'PROGRESS' && message.operationId === 'conditional-warning' && message.phase === 'validate')).toBe(true);
+  });
+
   it('runs workbook sheet listing, indexing, and destination extraction inside the worker', async () => {
     const messages: WorkerResponse[] = [];
     const dispatcher = createDataWorkerDispatcher((message) => messages.push(message));
@@ -269,6 +310,40 @@ describe('data worker dispatcher', () => {
     });
     expect(messages).toContainEqual({ type: 'CANCELLED', operationId: 'unique-large' });
     expect(messages.some((message) => message.type === 'RESULT' && message.operationId === 'unique-large')).toBe(false);
+  });
+
+  it('observes cancellation while validating conditional uniqueness in row batches', async () => {
+    const messages: WorkerResponse[] = [];
+    const dispatcher = createDataWorkerDispatcher((message) => {
+      messages.push(message);
+      if (message.type === 'PROGRESS' && message.operationId === 'conditional-unique-cancel' && message.phase === 'validate-unique' && message.completed === 1) {
+        dispatcher.cancel('conditional-unique-cancel');
+      }
+    });
+    const input = dataset(Array.from({ length: 5 }, (_, index) => row(
+      `r-${index + 1}`,
+      index + 2,
+      { name__1: 'A', code__1: index % 2 === 0 ? 'Repeated' : `Code ${index}` },
+    )));
+
+    await dispatcher.dispatch({
+      type: 'VALIDATE',
+      operationId: 'conditional-unique-cancel',
+      dataset: input,
+      rules: [{
+        type: 'conditionalMatrix',
+        keyColumnIds: ['name__1'],
+        dependentColumnIds: ['code__1'],
+        entries: [{
+          conditions: { name__1: { operator: 'equals', value: 'A' } },
+          constraints: { code__1: { type: 'unique' } },
+        }],
+      }],
+      batchSize: 1,
+    });
+
+    expect(messages).toContainEqual({ type: 'CANCELLED', operationId: 'conditional-unique-cancel' });
+    expect(messages.some((message) => message.type === 'RESULT' && message.operationId === 'conditional-unique-cancel')).toBe(false);
   });
 
   it('preserves Task 5 uniqueness issue ordering after batched validation', async () => {

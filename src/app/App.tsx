@@ -13,7 +13,8 @@ import { makeColumnId } from '../domain/dataset/column-id';
 import { suggestMappings } from '../domain/mapping/suggest-mappings';
 import type { WriteMode, WritePlan } from '../domain/merge/types';
 import type { TransformCommand } from '../domain/transforms/types';
-import { validateDataset, validateRow } from '../domain/validation/validate-row';
+import { validateDataset } from '../domain/validation/validate-row';
+import { validateConditionalMatrixRule } from '../domain/validation/matrix';
 import type { ValidationIssue, ValidationResult, ValidationRule } from '../domain/validation/types';
 import {
   destinationDetectionWarnings,
@@ -198,6 +199,16 @@ function changedSchema(previous: Dataset, next: Dataset): boolean {
     });
 }
 
+function validationRuleUsesOnlyColumns(rule: ValidationRule, columnIds: ReadonlySet<string>): boolean {
+  if (rule.type === 'conditionalMatrix') {
+    return [...rule.keyColumnIds, ...rule.dependentColumnIds].every((columnId) => columnIds.has(columnId))
+      && rule.entries.every((entry) => Object.keys(entry.conditions).every((columnId) => columnIds.has(columnId))
+        && Object.keys(entry.constraints).every((columnId) => columnIds.has(columnId)));
+  }
+  if (rule.type === 'compositeUnique') return rule.columnIds.every((columnId) => columnIds.has(columnId));
+  return columnIds.has(rule.columnId);
+}
+
 function duplicateDestinationIds(mappings: readonly ReviewedMapping[]): Set<string> {
   const counts = new Map<string, number>();
   for (const mapping of mappings) {
@@ -240,10 +251,13 @@ export function buildRejectedRows(
   dataset: Dataset,
   validation: ValidationResult,
   plan: WritePlan,
+  includeWarnings = false,
 ): RejectedSheetRow[] {
   const rowsById = new Map(dataset.rows.map((row) => [row.rowId, row]));
   const columnsById = new Map(dataset.columns.map((column) => [column.id, column]));
-  const validationRows = validation.issues.map((issue): RejectedSheetRow => {
+  const validationRows = validation.issues
+    .filter((issue) => includeWarnings || (issue.severity ?? 'error') === 'error')
+    .map((issue): RejectedSheetRow => {
     const row = rowsById.get(issue.rowId);
     return {
       sourceRowNumber: issue.sourceRowNumber,
@@ -253,7 +267,7 @@ export function buildRejectedRows(
       rejectionReason: issue.message,
       failedRuleOrTransform: issue.code,
     };
-  });
+    });
   const reason = {
     'incoming-duplicate-key': 'Chave duplicada nos dados de origem.',
     'existing-duplicate-key': 'Chave duplicada no destino existente.',
@@ -353,6 +367,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   const [writeMode, setWriteMode] = useState<WriteMode>('replace');
   const [keyColumnIds, setKeyColumnIds] = useState<string[]>([]);
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
+  const [includeValidationWarnings, setIncludeValidationWarnings] = useState<boolean | null>(null);
   const [writePlan, setWritePlan] = useState<WritePlan | null>(null);
   const [writePlanFingerprintValue, setWritePlanFingerprintValue] = useState<string | null>(null);
   const [datasetRevision, setDatasetRevision] = useState(0);
@@ -663,6 +678,9 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
           ...(schemaChanged && templateDataset
             ? { mappings: reconcileMappings(result.dataset.columns, templateDataset.columns, mappings) }
             : {}),
+          ...(schemaChanged
+            ? { validationRules: userRules.filter((rule) => validationRuleUsesOnlyColumns(rule, new Set(result.dataset.columns.map(({ id }) => id)))) }
+            : {}),
         });
         setDatasetRevision((current) => current + 1);
         setValidationResult(null);
@@ -672,7 +690,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         after?.(effectiveIncomingDataset(result.dataset, mappings));
       },
     });
-  }, [baseDataset, mappings, operationId, runOperation, store, templateDataset]);
+  }, [baseDataset, mappings, operationId, runOperation, store, templateDataset, userRules]);
 
   const replaceCommands = useCallback((nextCommands: TransformCommand[]) => {
     const previous = [...commands];
@@ -705,21 +723,8 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   const revalidateCorrection = useCallback((dataset: Dataset, command: Extract<TransformCommand, { type: 'editCell' }>) => {
     if (!validationResult) return;
     const rules = [...detectedRules, ...userRules];
-    const uniquenessRules = rules.filter((rule) => rule.type === 'unique' || rule.type === 'compositeUnique');
-    const localRules = rules.filter((rule) => rule.type !== 'unique' && rule.type !== 'compositeUnique');
-    const editedRow = dataset.rows.find(({ rowId }) => rowId === command.rowId);
-    const preserved = validationResult.issues.filter((issue) => (
-      issue.rowId !== command.rowId
-      && !uniquenessRules.some((rule) => rule.type === 'unique'
-        ? rule.columnId === issue.columnId
-        : rule.columnIds.includes(issue.columnId))
-    ));
-    const nextIssues = [
-      ...preserved,
-      ...(editedRow ? validateRow(editedRow, localRules) : []),
-      ...validateDataset(dataset, uniquenessRules).issues,
-    ];
-    setValidationResult({ isValid: nextIssues.length === 0, issues: nextIssues });
+    const nextIssues = validateDataset(dataset, rules).issues;
+    setValidationResult({ isValid: nextIssues.every(({ severity }) => (severity ?? 'error') !== 'error'), issues: nextIssues });
   }, [detectedRules, userRules, validationResult]);
 
   const editCell = useCallback((command: Extract<TransformCommand, { type: 'editCell' }>) => {
@@ -733,6 +738,13 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
 
   const runValidation = useCallback(() => {
     if (!effectiveDataset) return;
+    const matrixErrors = [...detectedRules, ...userRules]
+      .filter((rule) => rule.type === 'conditionalMatrix')
+      .flatMap((rule) => validateConditionalMatrixRule(rule, effectiveDataset.columns.map(({ id }) => id)));
+    if (matrixErrors.length > 0) {
+      setError(`Corrija a configuração da matriz: ${matrixErrors[0]}`);
+      return;
+    }
     const id = operationId('validation');
     runOperation({
       type: 'VALIDATE',
@@ -743,6 +755,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
       onResult: (result) => {
         if (result.type !== 'VALIDATE') return;
         setValidationResult(result.validationResult);
+        setIncludeValidationWarnings(null);
         setWritePlan(null);
         setExported(false);
       },
@@ -781,14 +794,14 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
     });
   }, [acceptedMappedColumns, currentPlanFingerprint, effectiveDataset, keyColumnIds, mappings, operationId, runOperation, selectedDestination, templateDataset, writeMode]);
 
-  const exportInput = useCallback((plan: WritePlan, riskIds: readonly string[] = []) => {
+  const exportInput = useCallback((plan: WritePlan, riskIds: readonly string[] = [], includeWarnings = false) => {
     if (!validationResult || !selectedDestination || !templateDataset || !templateIndex || !session.dataset) return null;
     return {
       destination: destinationForExport(selectedDestination, templateDataset, templateIndex),
       mappings: acceptedMappings(mappings),
       writePlan: plan,
       validationResult,
-      rejectedRows: buildRejectedRows(session.dataset, validationResult, plan),
+      rejectedRows: buildRejectedRows(session.dataset, validationResult, plan, includeWarnings),
       reviewedRiskIds: riskIds,
     };
   }, [mappings, selectedDestination, session.dataset, templateDataset, templateIndex, validationResult]);
@@ -817,7 +830,8 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
 
   const exportWorkbook = useCallback(() => {
     if (!currentWritePlan || !session.templateFileBuffer) return;
-    const input = exportInput(currentWritePlan, reviewedRiskIds);
+    if (includeValidationWarnings === null) return;
+    const input = exportInput(currentWritePlan, reviewedRiskIds, includeValidationWarnings);
     if (!input) return;
     const id = operationId('export');
     runOperation({
@@ -840,7 +854,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         setExported(true);
       },
     });
-  }, [currentWritePlan, exportInput, operationId, reviewedRiskIds, runOperation, session.templateFileBuffer]);
+  }, [currentWritePlan, exportInput, includeValidationWarnings, operationId, reviewedRiskIds, runOperation, session.templateFileBuffer]);
 
   const canAdvance = useMemo(() => {
     switch (stepIndex) {
@@ -1063,6 +1077,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
 
           {stepIndex === 5 && session.dataset ? (
             <ValidationPanel
+              dataset={session.dataset}
               columns={session.dataset.columns}
               detectedRules={detectedRules}
               userRules={userRules}
@@ -1070,6 +1085,10 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
               disabled={workflowBusy}
               onAddRule={(rule) => {
                 store.setState({ validationRules: [...userRules, rule] });
+                setValidationResult(null);
+              }}
+              onReplaceRule={(index, rule) => {
+                store.setState({ validationRules: userRules.map((current, currentIndex) => currentIndex === index ? rule : current) });
                 setValidationResult(null);
               }}
               onRemoveRule={(index) => {
@@ -1187,6 +1206,27 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
                   })}
                 </section>
               ) : null}
+              <fieldset className="warning-export-choice">
+                <legend>Incluir avisos no relatório de rejeitados?</legend>
+                <label>
+                  <input
+                    type="radio"
+                    name="include-validation-warnings"
+                    checked={includeValidationWarnings === false}
+                    onChange={() => setIncludeValidationWarnings(false)}
+                  />
+                  Não, somente erros
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="include-validation-warnings"
+                    checked={includeValidationWarnings === true}
+                    onChange={() => setIncludeValidationWarnings(true)}
+                  />
+                  Sim, incluir avisos
+                </label>
+              </fieldset>
               <button
                 type="button"
                 className="primary-button export-button"
@@ -1194,6 +1234,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
                   || !currentWritePlan
                   || !validationResult
                   || currentExportRisks === null
+                  || includeValidationWarnings === null
                   || currentExportRisks.some((risk) => risk.severity === 'hard')
                   || currentExportRisks.some((risk) => risk.severity === 'soft'
                     && !reviewedRiskIds.includes(exportRiskIdentifier(risk)))}
@@ -1504,6 +1545,28 @@ const APP_STYLES = `
   .validation-run { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 16px; border-radius: 12px; background: #eff6f2; }
   .issue-list { grid-column: 1 / -1; display: grid; gap: 7px; }
   .issue-list button { display: grid; grid-template-columns: 100px 160px 1fr; gap: 10px; text-align: left; border: 1px solid #edd2cf; color: #69342e; background: #fff8f7; }
+  .issue-list button.warning-issue { border-color: #ecd9a8; color: #735319; background: #fffaf0; }
+  .conditional-matrices-section { grid-column: 1 / -1; }
+  .matrix-column-picker { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 14px; margin: 14px 0; }
+  .matrix-column-picker fieldset { display: grid; gap: 7px; padding: 12px; border: 1px solid #dce6e0; border-radius: 10px; background: white; }
+  .matrix-column-picker legend { padding: 0 5px; color: #4f6259; font-size: 12px; font-weight: 800; }
+  .matrix-column-picker label { display: flex; gap: 8px; align-items: center; color: #52655c; font-size: 12px; }
+  .conditional-matrix-card { display: grid; gap: 12px; margin-top: 18px; padding: 16px; border: 1px solid #d7e3dc; border-radius: 12px; background: white; }
+  .matrix-card-heading, .matrix-toolbar, .matrix-actions { display: flex; align-items: center; gap: 9px; }
+  .matrix-card-heading strong { margin-right: auto; color: #274538; }
+  .matrix-toolbar > div:first-child { margin-right: auto; }
+  .matrix-toolbar p { margin: 5px 0 0; font-size: 12px; }
+  .matrix-actions { flex-wrap: wrap; }
+  .conditional-matrix-scroll { overflow-x: auto; border: 1px solid #dce6e0; border-radius: 10px; }
+  .conditional-matrix-table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: 12px; }
+  .conditional-matrix-table th { padding: 9px; border-bottom: 1px solid #dce6e0; color: #4f6259; background: #f4f8f5; text-align: left; white-space: nowrap; }
+  .conditional-matrix-table td { min-width: 150px; padding: 8px; border-bottom: 1px solid #edf1ef; vertical-align: top; }
+  .conditional-matrix-table select, .conditional-matrix-table input { width: 100%; min-height: 34px; margin-bottom: 5px; padding: 6px 8px; border: 1px solid #c9d4cf; border-radius: 7px; color: #17251f; background: white; font-size: 12px; }
+  .conditional-matrix-table td:last-child { min-width: 92px; }
+  .matrix-range-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+  .warning-export-choice { display: grid; gap: 8px; margin: 18px 0; padding: 13px; border: 1px solid #dce6e0; border-radius: 10px; color: #4f6259; }
+  .warning-export-choice legend { padding: 0 5px; font-size: 12px; font-weight: 800; }
+  .warning-export-choice label { display: flex; gap: 8px; align-items: center; font-size: 12px; }
   .data-grid-shell { overflow: hidden; border: 1px solid #d8e1dc; border-radius: 14px; }
   .grid-toolbar { display: flex; justify-content: space-between; padding: 11px 14px; color: #52655c; background: #f5f8f6; font-size: 12px; font-weight: 700; }
   .grid-toolbar label { display: flex; gap: 8px; }
@@ -1554,6 +1617,9 @@ const APP_STYLES = `
     .dataset-facts { grid-template-columns: 1fr; }
     .inline-form { grid-template-columns: 1fr; }
     .issue-list button { grid-template-columns: 1fr; }
+    .matrix-column-picker { grid-template-columns: 1fr; }
+    .matrix-toolbar { align-items: flex-start; flex-direction: column; }
+    .matrix-toolbar > div:first-child { margin-right: 0; }
     .workflow-footer { position: sticky; bottom: 0; z-index: 3; }
   }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }

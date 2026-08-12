@@ -566,6 +566,29 @@ describe('mapping and summary invariants', () => {
       }),
     ]);
   });
+
+  it('keeps conditional warnings out of rejected rows unless explicitly requested', () => {
+    const validation = {
+      isValid: true,
+      issues: [{
+        rowId: 'source-2', sourceRowNumber: 2, columnId: 'nome__1', code: 'conditional_required', value: '', message: 'Aviso', severity: 'warning' as const,
+      }],
+    };
+    const plan = {
+      mode: 'append' as const,
+      headerRow: 1,
+      clears: [],
+      inserts: [],
+      updates: [],
+      kept: [],
+      duplicates: [],
+      rejected: [],
+      assignments: [],
+    };
+
+    expect(buildRejectedRows(sourceDataset, validation, plan)).toEqual([]);
+    expect(buildRejectedRows(sourceDataset, validation, plan, true)).toHaveLength(1);
+  });
 });
 
 describe('final export safeguards', () => {
@@ -623,6 +646,7 @@ describe('final export safeguards', () => {
     expect(await screen.findByText('Uma fórmula será sobrescrita.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Exportar .xlsx' })).toBeDisabled();
     await user.click(screen.getByRole('checkbox', { name: /Confirmar risco formula-overwrite/ }));
+    await user.click(screen.getByRole('radio', { name: 'Não, somente erros' }));
     expect(screen.getByRole('button', { name: 'Exportar .xlsx' })).toBeEnabled();
   });
 

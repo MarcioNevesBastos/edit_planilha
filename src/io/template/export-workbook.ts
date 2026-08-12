@@ -193,7 +193,7 @@ export async function exportWorkbook(input: ExportInput, options?: ExportBatchOp
   const working = await openOoxmlPackage(await input.package.emit());
   const index = await indexWorkbook(working);
   const sheet = requireSheet(index.sheets, input.destination.sheetName);
-  const invalidRowIds = new Set(input.validationResult.issues.map(({ rowId }) => rowId));
+  const invalidRowIds = validationErrorRowIds(input.validationResult);
   const writeActions = validWriteActions(input.writePlan, invalidRowIds);
   const maxDestinationRow = Math.max(
     input.destination.dataStartRow - 1,
@@ -349,13 +349,20 @@ function scanMappingRisks(input: ExportInput, addRisk: (risk: ExportRisk) => voi
 }
 
 function scanValidationState(input: ExportInput, addRisk: (risk: ExportRisk) => void): void {
-  if (input.validationResult.isValid !== (input.validationResult.issues.length === 0)) {
+  const expectedValidity = input.validationResult.issues.every(({ severity }) => (severity ?? 'error') !== 'error');
+  if (input.validationResult.isValid !== expectedValidity) {
     addRisk({
       code: 'inconsistent-validation-state',
       severity: 'hard',
       message: 'Validation state does not match its issue list.',
     });
   }
+}
+
+function validationErrorRowIds(validation: ValidationResult): Set<string> {
+  return new Set(validation.issues
+    .filter(({ severity }) => (severity ?? 'error') === 'error')
+    .map(({ rowId }) => rowId));
 }
 
 function scanDestinationGeometry(
@@ -416,7 +423,7 @@ function scanNamedRangeRisks(
     destinationRange.endRow,
     ...validWriteActions(
       input.writePlan,
-      new Set(input.validationResult.issues.map(({ rowId }) => rowId)),
+      validationErrorRowIds(input.validationResult),
     ).map(({ destinationRow }) => destinationRow),
   );
   const expands = targetLastRow > destinationRange.endRow;
@@ -531,7 +538,7 @@ function scanWorksheetRisks(
   addRisk: (risk: ExportRisk) => void,
 ): void {
   const worksheet = decode(input.package.readPart(sheet.path));
-  const invalidRowIds = new Set(input.validationResult.issues.map(({ rowId }) => rowId));
+  const invalidRowIds = validationErrorRowIds(input.validationResult);
   const writeCells = targetCells(input.writePlan, mappings, invalidRowIds);
   const destinationRange = parseRange(input.destination.range);
   const mergedRanges = [...worksheet.matchAll(/<mergeCell\b[^>]*\bref="([^"]+)"[^>]*\/?\s*>/g)]
@@ -577,7 +584,7 @@ function scanTableRisks(
   mappings: readonly ResolvedMapping[],
   addRisk: (risk: ExportRisk) => void,
 ): void {
-  const invalidRowIds = new Set(input.validationResult.issues.map(({ rowId }) => rowId));
+  const invalidRowIds = validationErrorRowIds(input.validationResult);
   const writeCells = targetCells(input.writePlan, mappings, invalidRowIds);
   const touchedTables = sheet.tables.filter((table) => {
     const range = parseRange(table.range);

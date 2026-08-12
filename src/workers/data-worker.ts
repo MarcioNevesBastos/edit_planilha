@@ -3,8 +3,8 @@ import type { CellValue, DataRow, Dataset } from '../domain/dataset/types';
 import { planWriteInBatches } from '../domain/merge/plan-write';
 import { applyTransform, compareDataRows } from '../domain/transforms/apply-transform';
 import type { TransformCommand } from '../domain/transforms/types';
-import { validateRow } from '../domain/validation/validate-row';
-import type { ValidationIssue, ValidationRule } from '../domain/validation/types';
+import { matchesConditionalMatrixEntry, validateRow } from '../domain/validation/validate-row';
+import type { ConditionalMatrixRule, ValidationIssue, ValidationRule } from '../domain/validation/types';
 import { listSourceSheets, readSource } from '../io/source/read-source';
 import { exportWorkbook, scanExportRisks } from '../io/template/export-workbook';
 import { extractDestinationDataset } from '../io/template/extract-destination';
@@ -250,9 +250,19 @@ async function dispatchRequest(
           runBatches,
         ));
       }
+      const conditionalRules = request.rules.filter((rule): rule is ConditionalMatrixRule => rule.type === 'conditionalMatrix');
+      for (const rule of conditionalRules) {
+        issues.push(...await validateConditionalUniqueInBatches(
+          request.dataset,
+          rule,
+          request.operationId,
+          normalizeBatchSize(request.batchSize),
+          runBatches,
+        ));
+      }
       return {
         type: 'VALIDATE',
-        validationResult: { isValid: issues.length === 0, issues },
+        validationResult: { isValid: issues.every(({ severity }) => (severity ?? 'error') !== 'error'), issues },
       };
     }
     case 'PLAN_WRITE': {
@@ -513,6 +523,7 @@ async function validateUniqueRuleInBatches(
             code: rule.type === 'unique' ? 'unique' : 'composite_unique',
             value: row.values[columnId] ?? null,
             message: rule.type === 'unique' ? 'Value must be unique.' : 'Combined values must be unique.',
+            severity: 'error',
           });
         }
         groupStart = groupEnd;
@@ -520,6 +531,81 @@ async function validateUniqueRuleInBatches(
       }
     },
   );
+  return issues;
+}
+
+async function validateConditionalUniqueInBatches(
+  dataset: Dataset,
+  rule: ConditionalMatrixRule,
+  operationId: string,
+  batchSize: number,
+  runBatches: (
+    operationId: string,
+    total: number,
+    requestedBatchSize: number | undefined,
+    phase: WorkerPhase,
+    processBatch: (start: number, end: number) => void,
+  ) => Promise<void>,
+): Promise<ValidationIssue[]> {
+  const issues: ValidationIssue[] = [];
+  for (const entry of rule.entries) {
+    for (const columnId of rule.dependentColumnIds) {
+      const constraint = entry.constraints[columnId];
+      if (!constraint || (constraint.type !== 'unique' && constraint.type !== 'compositeUnique')) continue;
+      const columnIds = constraint.type === 'compositeUnique' ? constraint.columnIds : [columnId];
+      if (columnIds.length === 0) continue;
+      const groups = new Map<string, DataRow[]>();
+      await runBatches(
+        operationId,
+        dataset.rows.length,
+        batchSize,
+        'validate-unique',
+        (start, end) => {
+          for (const row of dataset.rows.slice(start, end)) {
+            if (!matchesConditionalMatrixEntry(row, rule, entry)) continue;
+            const values = columnIds.map((current) => row.values[current] ?? null);
+            if (values.some(isValidationEmpty)) continue;
+            const key = stableValidationKey(values);
+            const rows = groups.get(key);
+            if (rows) rows.push(row);
+            else groups.set(key, [row]);
+          }
+        },
+      );
+      const duplicateGroups = [...groups.values()].filter((rows) => rows.length > 1);
+      const duplicateRowTotal = duplicateGroups.reduce((total, rows) => total + rows.length, 0);
+      await runBatches(
+        operationId,
+        duplicateRowTotal,
+        batchSize,
+        'validate-unique-output',
+        (start, end) => {
+          let groupStart = 0;
+          for (const rows of duplicateGroups) {
+            const groupEnd = groupStart + rows.length;
+            const rowStart = Math.max(start, groupStart) - groupStart;
+            const rowEnd = Math.min(end, groupEnd) - groupStart;
+            for (let index = Math.max(0, rowStart); index < Math.max(0, rowEnd); index += 1) {
+              const row = rows[index];
+              issues.push({
+                rowId: row.rowId,
+                sourceRowNumber: row.sourceRowNumber,
+                columnId: columnIds[0],
+                code: constraint.type === 'unique' ? 'conditional_unique' : 'conditional_composite_unique',
+                value: row.values[columnIds[0]] ?? null,
+                message: constraint.type === 'unique'
+                  ? 'Value must be unique within the conditional context.'
+                  : 'Combined values must be unique within the conditional context.',
+                severity: 'warning',
+              });
+            }
+            groupStart = groupEnd;
+            if (groupStart >= end) break;
+          }
+        },
+      );
+    }
+  }
   return issues;
 }
 
