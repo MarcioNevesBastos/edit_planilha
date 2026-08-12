@@ -1445,7 +1445,7 @@ const APP_STYLES = `
   .step-heading p { margin: 0; color: #65766e; }
   .step-content { min-height: 340px; padding: 30px 34px; }
   .workflow-footer { display: flex; justify-content: space-between; padding: 20px 34px; border-top: 1px solid #e6ebe8; background: #fbfcfb; }
-  .primary-button, .secondary-button, .mapping-actions button, .command-toolbar button, .command-stack button, .validation-layout button, .operation-panel button { min-height: 40px; padding: 9px 16px; border-radius: 10px; font-weight: 750; }
+  .primary-button, .secondary-button, .mapping-actions button, .mapping-bulk-actions button, .command-toolbar button, .command-stack button, .validation-layout button, .operation-panel button { min-height: 40px; padding: 9px 16px; border-radius: 10px; font-weight: 750; }
   .primary-button { border: 1px solid #176b45; color: white; background: #176b45; box-shadow: 0 5px 13px #176b4524; }
   .secondary-button { border: 1px solid #bac8c1; color: #274538; background: white; }
   .visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
@@ -1480,6 +1480,8 @@ const APP_STYLES = `
   .confidence-low { color: #a44c46; }
   .mapping-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .mapping-actions button { min-height: 32px; padding: 6px 9px; border: 1px solid #cbd6d1; color: #315245; background: white; font-size: 11px; }
+  .mapping-bulk-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+  .mapping-bulk-actions button { border: 1px solid #cbd6d1; color: #315245; background: white; }
   .status-ok, .status-review { width: 100%; font-size: 11px; font-weight: 850; }
   .status-ok { color: #177048; } .status-review { color: #9a6819; }
   .transform-layout, .validation-layout { display: grid; grid-template-columns: minmax(300px,.8fr) minmax(420px,1.4fr); gap: 22px; align-items: start; }

@@ -24,6 +24,21 @@ const confidenceLabels = {
   low: 'Baixa',
 } as const;
 
+interface MappingBulkActionsProps {
+  disabled: boolean;
+  onAcceptAll(): void;
+  onIgnoreAll(): void;
+}
+
+function MappingBulkActions({ disabled, onAcceptAll, onIgnoreAll }: MappingBulkActionsProps) {
+  return (
+    <div className="mapping-bulk-actions">
+      <button type="button" disabled={disabled} onClick={onAcceptAll}>Aceitar todos</button>
+      <button type="button" disabled={disabled} onClick={onIgnoreAll}>Ignorar todos</button>
+    </div>
+  );
+}
+
 export function MappingGrid({
   sourceColumns,
   destinationColumns,
@@ -43,91 +58,115 @@ export function MappingGrid({
       : mapping));
   };
 
+  const acceptAll = () => {
+    onChange(mappings.map((mapping) => (
+      mapping.destinationColumnId === null
+        ? { ...mapping, status: 'review-required' as const }
+        : { ...mapping, status: 'accepted' as const }
+    )));
+  };
+
+  const ignoreAll = () => {
+    if (!window.confirm('Ignorar todos os mapeamentos?')) return;
+
+    onChange(mappings.map((mapping) => ({
+      ...mapping,
+      action: 'ignore' as const,
+      destinationColumnId: null,
+      status: 'accepted' as const,
+      fixedValue: undefined,
+    })));
+  };
+
   return (
-    <div className="mapping-grid" role="table" aria-label="Revisão de mapeamentos">
-      <div className="mapping-header" role="row">
-        <span role="columnheader">Origem</span>
-        <span role="columnheader">Destino sugerido</span>
-        <span role="columnheader">Confiança</span>
-        <span role="columnheader">Status e ação</span>
-      </div>
-      {mappings.map((mapping) => {
-        const source = sourceColumns.find(({ id }) => id === mapping.sourceColumnId);
-        if (!source) return null;
-        const duplicateDestination = mapping.destinationColumnId !== null
-          && mapping.action !== 'ignore'
-          && (destinationCounts.get(mapping.destinationColumnId) ?? 0) > 1;
-        return (
-          <div className="mapping-row" role="row" key={mapping.sourceColumnId}>
-            <strong role="cell">{source.header}</strong>
-            <div role="cell">
-              <label className="visually-hidden" htmlFor={`mapping-${source.id}`}>Destino para {source.header}</label>
-              <select
-                id={`mapping-${source.id}`}
-                value={mapping.destinationColumnId ?? ''}
-                disabled={disabled || mapping.action === 'ignore'}
-                onChange={(event) => update(source.id, {
-                  destinationColumnId: event.currentTarget.value || null,
-                  action: 'map',
-                  status: 'review-required',
-                })}
-              >
-                <option value="">Sem sugestão</option>
-                {destinationColumns.map((column) => (
-                  <option value={column.id} key={column.id}>{column.header}</option>
-                ))}
-              </select>
-              {mapping.action === 'fixed' ? (
-                <input
-                  aria-label={`Valor fixo para ${source.header}`}
-                  value={String(mapping.fixedValue ?? '')}
-                  disabled={disabled}
+    <>
+      <MappingBulkActions disabled={disabled} onAcceptAll={acceptAll} onIgnoreAll={ignoreAll} />
+      <div className="mapping-grid" role="table" aria-label="Revisão de mapeamentos">
+        <div className="mapping-header" role="row">
+          <span role="columnheader">Origem</span>
+          <span role="columnheader">Destino sugerido</span>
+          <span role="columnheader">Confiança</span>
+          <span role="columnheader">Status e ação</span>
+        </div>
+        {mappings.map((mapping) => {
+          const source = sourceColumns.find(({ id }) => id === mapping.sourceColumnId);
+          if (!source) return null;
+          const duplicateDestination = mapping.destinationColumnId !== null
+            && mapping.action !== 'ignore'
+            && (destinationCounts.get(mapping.destinationColumnId) ?? 0) > 1;
+          return (
+            <div className="mapping-row" role="row" key={mapping.sourceColumnId}>
+              <strong role="cell">{source.header}</strong>
+              <div role="cell">
+                <label className="visually-hidden" htmlFor={`mapping-${source.id}`}>Destino para {source.header}</label>
+                <select
+                  id={`mapping-${source.id}`}
+                  value={mapping.destinationColumnId ?? ''}
+                  disabled={disabled || mapping.action === 'ignore'}
                   onChange={(event) => update(source.id, {
-                    fixedValue: event.currentTarget.value,
-                    status: event.currentTarget.value === '' ? 'review-required' : 'accepted',
+                    destinationColumnId: event.currentTarget.value || null,
+                    action: 'map',
+                    status: 'review-required',
                   })}
-                />
-              ) : null}
-            </div>
-            <span role="cell" className={`confidence confidence-${mapping.confidence}`}>
-              {confidenceLabels[mapping.confidence]} · {Math.round(mapping.score * 100)}%
-            </span>
-            <div role="cell" className="mapping-actions">
-              <span className={duplicateDestination || mapping.status !== 'accepted' ? 'status-review' : 'status-ok'}>
-                {duplicateDestination
-                  ? 'Conflito: destino duplicado'
-                  : mapping.status === 'accepted' ? 'Revisado' : 'Revisão necessária'}
+                >
+                  <option value="">Sem sugestão</option>
+                  {destinationColumns.map((column) => (
+                    <option value={column.id} key={column.id}>{column.header}</option>
+                  ))}
+                </select>
+                {mapping.action === 'fixed' ? (
+                  <input
+                    aria-label={`Valor fixo para ${source.header}`}
+                    value={String(mapping.fixedValue ?? '')}
+                    disabled={disabled}
+                    onChange={(event) => update(source.id, {
+                      fixedValue: event.currentTarget.value,
+                      status: event.currentTarget.value === '' ? 'review-required' : 'accepted',
+                    })}
+                  />
+                ) : null}
+              </div>
+              <span role="cell" className={`confidence confidence-${mapping.confidence}`}>
+                {confidenceLabels[mapping.confidence]} · {Math.round(mapping.score * 100)}%
               </span>
-              <button
-                type="button"
-                disabled={disabled || mapping.destinationColumnId === null}
-                onClick={() => update(source.id, { action: 'map', status: 'accepted', fixedValue: undefined })}
-              >
-                Aceitar {source.header}
-              </button>
-              <button
-                type="button"
-                disabled={disabled}
-                onClick={() => update(source.id, {
-                  action: 'ignore',
-                  destinationColumnId: null,
-                  status: 'accepted',
-                  fixedValue: undefined,
-                })}
-              >
-                Ignorar {source.header}
-              </button>
-              <button
-                type="button"
-                disabled={disabled || mapping.destinationColumnId === null}
-                onClick={() => update(source.id, { action: 'fixed', status: 'review-required', fixedValue: '' })}
-              >
-                Usar valor fixo {source.header}
-              </button>
+              <div role="cell" className="mapping-actions">
+                <span className={duplicateDestination || mapping.status !== 'accepted' ? 'status-review' : 'status-ok'}>
+                  {duplicateDestination
+                    ? 'Conflito: destino duplicado'
+                    : mapping.status === 'accepted' ? 'Revisado' : 'Revisão necessária'}
+                </span>
+                <button
+                  type="button"
+                  disabled={disabled || mapping.destinationColumnId === null}
+                  onClick={() => update(source.id, { action: 'map', status: 'accepted', fixedValue: undefined })}
+                >
+                  Aceitar {source.header}
+                </button>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => update(source.id, {
+                    action: 'ignore',
+                    destinationColumnId: null,
+                    status: 'accepted',
+                    fixedValue: undefined,
+                  })}
+                >
+                  Ignorar {source.header}
+                </button>
+                <button
+                  type="button"
+                  disabled={disabled || mapping.destinationColumnId === null}
+                  onClick={() => update(source.id, { action: 'fixed', status: 'review-required', fixedValue: '' })}
+                >
+                  Usar valor fixo {source.header}
+                </button>
+              </div>
             </div>
-          </div>
-        );
-      })}
-    </div>
+          );
+        })}
+      </div>
+      <MappingBulkActions disabled={disabled} onAcceptAll={acceptAll} onIgnoreAll={ignoreAll} />
+    </>
   );
 }
