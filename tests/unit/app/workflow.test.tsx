@@ -385,10 +385,90 @@ describe('workflow navigation', () => {
 });
 
 describe('mapping and summary invariants', () => {
+  const sourceColumns = [
+    ...sourceDataset.columns,
+    { id: 'fixed__1', header: 'Constante', sourceIndex: 2, detectedType: 'string' as const },
+  ];
+  const destinationColumns = templateDataset.columns;
+  const mappings: ReviewedMapping[] = [
+    { sourceColumnId: 'id__1', destinationColumnId: 'id__1', confidence: 'exact', score: 1, status: 'review-required', action: 'map' },
+    { sourceColumnId: 'nome__1', destinationColumnId: null, confidence: 'low', score: 0, status: 'review-required', action: 'map' },
+    { sourceColumnId: 'fixed__1', destinationColumnId: 'produto__1', confidence: 'medium', score: 0.7, status: 'review-required', action: 'fixed', fixedValue: 'constante' },
+  ];
+
+  it('renders bulk mapping actions in both action-bar positions', () => {
+    render(<MappingGrid
+      sourceColumns={sourceColumns}
+      destinationColumns={destinationColumns}
+      mappings={mappings}
+      onChange={() => undefined}
+    />);
+
+    expect(screen.getAllByRole('button', { name: 'Aceitar todos' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Ignorar todos' })).toHaveLength(2);
+  });
+
+  it('accepts eligible mappings while preserving missing and fixed rows', async () => {
+    const onChange = vi.fn();
+    const user = userEvent.setup();
+
+    render(<MappingGrid
+      sourceColumns={sourceColumns}
+      destinationColumns={destinationColumns}
+      mappings={mappings}
+      onChange={onChange}
+    />);
+
+    await user.click(screen.getAllByRole('button', { name: 'Aceitar todos' })[0]);
+    const [next] = onChange.mock.calls[0] as [ReviewedMapping[]];
+
+    expect(next[0]).toMatchObject({ status: 'accepted', action: 'map', destinationColumnId: 'id__1' });
+    expect(next[1]).toMatchObject({ status: 'review-required', destinationColumnId: null });
+    expect(next[2]).toMatchObject({ status: 'accepted', action: 'fixed', fixedValue: 'constante' });
+  });
+
+  it('confirms ignore-all and supports disabled bulk actions', async () => {
+    const onChange = vi.fn();
+    const user = userEvent.setup();
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal('confirm', confirm);
+
+    render(<MappingGrid
+      sourceColumns={sourceColumns}
+      destinationColumns={destinationColumns}
+      mappings={mappings}
+      onChange={onChange}
+    />);
+
+    await user.click(screen.getAllByRole('button', { name: 'Ignorar todos' })[0]);
+    expect(onChange).not.toHaveBeenCalled();
+
+    confirm.mockReturnValue(true);
+    await user.click(screen.getAllByRole('button', { name: 'Ignorar todos' })[1]);
+    const [next] = onChange.mock.calls[0] as [ReviewedMapping[]];
+    expect(next).toEqual(mappings.map((mapping) => ({
+      ...mapping,
+      action: 'ignore',
+      destinationColumnId: null,
+      status: 'accepted',
+      fixedValue: undefined,
+    })));
+
+    cleanup();
+    render(<MappingGrid
+      sourceColumns={sourceColumns}
+      destinationColumns={destinationColumns}
+      mappings={mappings}
+      disabled
+      onChange={() => undefined}
+    />);
+
+    expect(screen.getAllByRole('button', { name: 'Aceitar todos' }).every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+    expect(screen.getAllByRole('button', { name: 'Ignorar todos' }).every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+  });
+
   it('surfaces duplicate destination conflicts in the mapping grid', () => {
-    const sourceColumns = sourceDataset.columns;
-    const destinationColumns = templateDataset.columns;
-    const mappings: ReviewedMapping[] = sourceColumns.map((column) => ({
+    const duplicateMappings: ReviewedMapping[] = sourceDataset.columns.map((column) => ({
       sourceColumnId: column.id,
       destinationColumnId: 'id__1',
       confidence: 'exact',
@@ -400,7 +480,7 @@ describe('mapping and summary invariants', () => {
     render(<MappingGrid
       sourceColumns={sourceColumns}
       destinationColumns={destinationColumns}
-      mappings={mappings}
+      mappings={duplicateMappings}
       onChange={() => undefined}
     />);
 
