@@ -46,6 +46,7 @@ export function MappingGrid({
   disabled = false,
   onChange,
 }: MappingGridProps) {
+  const bulkActionsDisabled = disabled || mappings.length === 0;
   const destinationCounts = new Map<string, number>();
   for (const mapping of mappings) {
     if (mapping.action === 'ignore' || mapping.destinationColumnId === null) continue;
@@ -82,7 +83,7 @@ export function MappingGrid({
 
   return (
     <>
-      <MappingBulkActions disabled={disabled} onAcceptAll={acceptAll} onIgnoreAll={ignoreAll} />
+      <MappingBulkActions disabled={bulkActionsDisabled} onAcceptAll={acceptAll} onIgnoreAll={ignoreAll} />
       <div className="mapping-grid" role="table" aria-label="Revisão de mapeamentos">
         <div className="mapping-header" role="row">
           <span role="columnheader">Origem</span>
@@ -168,7 +169,7 @@ export function MappingGrid({
           );
         })}
       </div>
-      <MappingBulkActions disabled={disabled} onAcceptAll={acceptAll} onIgnoreAll={ignoreAll} />
+      <MappingBulkActions disabled={bulkActionsDisabled} onAcceptAll={acceptAll} onIgnoreAll={ignoreAll} />
     </>
   );
 }

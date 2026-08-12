@@ -171,6 +171,7 @@ class ControlledWorker implements WorkflowWorker {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 async function templateFile(name = 'modelo.xlsx'): Promise<File> {
@@ -408,6 +409,18 @@ describe('mapping and summary invariants', () => {
 
     expect(screen.getAllByRole('button', { name: 'Aceitar todos' })).toHaveLength(2);
     expect(screen.getAllByRole('button', { name: 'Ignorar todos' })).toHaveLength(2);
+  });
+
+  it('disables both bulk actions when there are no mappings', () => {
+    render(<MappingGrid
+      sourceColumns={sourceColumns}
+      destinationColumns={destinationColumns}
+      mappings={[]}
+      onChange={() => undefined}
+    />);
+
+    expect(screen.getAllByRole('button', { name: 'Aceitar todos' }).every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+    expect(screen.getAllByRole('button', { name: 'Ignorar todos' }).every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
   });
 
   it('accepts eligible mappings while preserving missing, fixed, and ignored rows', async () => {
