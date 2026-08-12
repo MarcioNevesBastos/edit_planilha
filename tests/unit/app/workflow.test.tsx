@@ -388,12 +388,14 @@ describe('mapping and summary invariants', () => {
   const sourceColumns = [
     ...sourceDataset.columns,
     { id: 'fixed__1', header: 'Constante', sourceIndex: 2, detectedType: 'string' as const },
+    { id: 'ignored__1', header: 'Ignorada', sourceIndex: 3, detectedType: 'string' as const },
   ];
   const destinationColumns = templateDataset.columns;
   const mappings: ReviewedMapping[] = [
     { sourceColumnId: 'id__1', destinationColumnId: 'id__1', confidence: 'exact', score: 1, status: 'review-required', action: 'map' },
     { sourceColumnId: 'nome__1', destinationColumnId: null, confidence: 'low', score: 0, status: 'review-required', action: 'map' },
     { sourceColumnId: 'fixed__1', destinationColumnId: 'produto__1', confidence: 'medium', score: 0.7, status: 'review-required', action: 'fixed', fixedValue: 'constante' },
+    { sourceColumnId: 'ignored__1', destinationColumnId: null, confidence: 'low', score: 0.1, status: 'accepted', action: 'ignore' },
   ];
 
   it('renders bulk mapping actions in both action-bar positions', () => {
@@ -408,7 +410,7 @@ describe('mapping and summary invariants', () => {
     expect(screen.getAllByRole('button', { name: 'Ignorar todos' })).toHaveLength(2);
   });
 
-  it('accepts eligible mappings while preserving missing and fixed rows', async () => {
+  it('accepts eligible mappings while preserving missing, fixed, and ignored rows', async () => {
     const onChange = vi.fn();
     const user = userEvent.setup();
 
@@ -425,6 +427,7 @@ describe('mapping and summary invariants', () => {
     expect(next[0]).toMatchObject({ status: 'accepted', action: 'map', destinationColumnId: 'id__1' });
     expect(next[1]).toMatchObject({ status: 'review-required', destinationColumnId: null });
     expect(next[2]).toMatchObject({ status: 'accepted', action: 'fixed', fixedValue: 'constante' });
+    expect(next[3]).toEqual(mappings[3]);
   });
 
   it('confirms ignore-all and supports disabled bulk actions', async () => {
@@ -441,6 +444,7 @@ describe('mapping and summary invariants', () => {
     />);
 
     await user.click(screen.getAllByRole('button', { name: 'Ignorar todos' })[0]);
+    expect(confirm).toHaveBeenCalledWith('Ignorar todos os mapeamentos?');
     expect(onChange).not.toHaveBeenCalled();
 
     confirm.mockReturnValue(true);

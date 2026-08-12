@@ -60,7 +60,9 @@ export function MappingGrid({
 
   const acceptAll = () => {
     onChange(mappings.map((mapping) => (
-      mapping.destinationColumnId === null
+      mapping.action === 'ignore'
+        ? mapping
+        : mapping.destinationColumnId === null
         ? { ...mapping, status: 'review-required' as const }
         : { ...mapping, status: 'accepted' as const }
     )));
