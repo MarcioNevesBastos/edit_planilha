@@ -75,6 +75,14 @@ for (const rowCount of LOAD_ROW_COUNTS) {
     expect(initialDomRows).toBeLessThan(100);
 
     const viewport = grid.locator('.data-grid-viewport');
+    const header = grid.locator('.data-grid-header');
+    await expect(header).toHaveCSS('min-width', '1192px');
+    await viewport.evaluate((element) => {
+      element.scrollLeft = 64;
+      element.dispatchEvent(new Event('scroll'));
+    });
+    await expect.poll(() => header.evaluate((element) => element.style.transform)).toBe('translateX(-64px)');
+
     await viewport.evaluate((element) => {
       element.scrollTop = element.scrollHeight;
       element.dispatchEvent(new Event('scroll'));

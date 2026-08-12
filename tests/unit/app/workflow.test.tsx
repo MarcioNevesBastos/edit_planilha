@@ -668,6 +668,48 @@ describe('final export safeguards', () => {
 });
 
 describe('virtualized preview grid', () => {
+  it('keeps long header names readable and available in full', () => {
+    const longHeader = 'Descrição detalhada do produto comercial';
+    const dataset = {
+      ...sourceDataset,
+      columns: [{ ...sourceDataset.columns[0], header: longHeader }],
+    };
+
+    render(<DataGrid dataset={dataset} onEdit={vi.fn()} />);
+
+    const header = screen.getByRole('columnheader', { name: longHeader });
+    expect(header).toHaveAttribute('title', longHeader);
+    expect(header).toHaveClass('data-grid-header-cell');
+  });
+
+  it('sizes the header to the complete horizontal grid width', () => {
+    const columns = Array.from({ length: 7 }, (_, index) => ({
+      id: `column-${index}`,
+      header: `Coluna ${index + 1}`,
+      sourceIndex: index,
+      detectedType: 'string' as const,
+    }));
+
+    render(<DataGrid dataset={{ ...sourceDataset, columns }} onEdit={vi.fn()} />);
+
+    expect(document.querySelector('.data-grid-header')).toHaveStyle({ minWidth: '1192px' });
+  });
+
+  it('syncs the header with horizontal scrolling', () => {
+    render(<DataGrid dataset={sourceDataset} onEdit={vi.fn()} />);
+
+    const viewport = document.querySelector('.data-grid-viewport');
+    const header = document.querySelector('.data-grid-header');
+
+    expect(viewport).not.toBeNull();
+    expect(header).not.toBeNull();
+
+    (viewport as HTMLElement).scrollLeft = 128;
+    fireEvent.scroll(viewport as HTMLElement);
+
+    expect(header).toHaveStyle({ transform: 'translateX(-128px)' });
+  });
+
   it('renders a window, filters by issue metadata, and dispatches direct edits', async () => {
     const rows = Array.from({ length: 200 }, (_, index) => ({
       rowId: `row-${index}`,

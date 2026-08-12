@@ -41,6 +41,7 @@ export function DataGrid({
   onEdit,
 }: DataGridProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLDivElement>(null);
   const [errorsOnly, setErrorsOnly] = useState(false);
   const issueByCell = useMemo(() => new Map(
     issues.map((issue) => [`${issue.rowId}\u0000${issue.columnId}`, issue]),
@@ -90,8 +91,23 @@ export function DataGrid({
     });
   }, [dataset.rows, focusTarget, visibleRowIndices, virtualizer]);
 
+  useEffect(() => {
+    const viewport = scrollRef.current;
+    const header = headerRef.current;
+    if (!viewport || !header) return undefined;
+
+    const syncHorizontalScroll = () => {
+      header.style.transform = `translateX(-${viewport.scrollLeft}px)`;
+    };
+
+    syncHorizontalScroll();
+    viewport.addEventListener('scroll', syncHorizontalScroll, { passive: true });
+    return () => viewport.removeEventListener('scroll', syncHorizontalScroll);
+  }, []);
+
   const virtualRows = virtualizer.getVirtualItems();
   const gridTemplateColumns = `72px repeat(${dataset.columns.length}, minmax(160px, 1fr))`;
+  const gridWidth = 72 + dataset.columns.length * 160;
 
   return (
     <section className="data-grid-shell" aria-label="Prévia dos dados">
@@ -107,14 +123,21 @@ export function DataGrid({
         </label>
         <span>{visibleCount} de {dataset.rows.length} linhas</span>
       </div>
-      <div className="data-grid-header" role="row" style={{ gridTemplateColumns }}>
+      <div ref={headerRef} className="data-grid-header" role="row" style={{ gridTemplateColumns, minWidth: gridWidth }}>
         <div role="columnheader">Linha</div>
         {dataset.columns.map((column) => (
-          <div role="columnheader" key={column.id}>{column.header}</div>
+          <div
+            className="data-grid-header-cell"
+            role="columnheader"
+            key={column.id}
+            title={column.header}
+          >
+            {column.header}
+          </div>
         ))}
       </div>
       <div ref={scrollRef} className="data-grid-viewport">
-        <div style={{ height: virtualizer.getTotalSize(), position: 'relative', minWidth: 72 + dataset.columns.length * 160 }}>
+        <div style={{ height: virtualizer.getTotalSize(), position: 'relative', minWidth: gridWidth }}>
           {virtualRows.map((virtualRow) => {
             const sourceIndex = visibleRowIndices?.[virtualRow.index] ?? virtualRow.index;
             const row = dataset.rows[sourceIndex];

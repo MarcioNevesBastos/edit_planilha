@@ -1573,6 +1573,7 @@ const APP_STYLES = `
   .data-grid-header, .data-grid-row { display: grid; }
   .data-grid-header { overflow: hidden; color: #44574e; background: #eaf0ed; font-size: 11px; font-weight: 850; }
   .data-grid-header > div, .data-grid-row > div { min-width: 0; padding: 10px; border-right: 1px solid #dde5e1; }
+  .data-grid-header-cell { display: -webkit-box; overflow: hidden; overflow-wrap: anywhere; line-height: 1.25; -webkit-box-orient: vertical; -webkit-box-align: center; -webkit-line-clamp: 3; white-space: normal; }
   .data-grid-viewport { position: relative; height: 360px; overflow: auto; background: white; }
   .data-grid-row { position: absolute; top: 0; left: 0; width: 100%; min-height: 42px; border-bottom: 1px solid #e6ebe8; }
   .data-grid-row > div { padding: 5px 8px; }
