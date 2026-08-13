@@ -1,5 +1,13 @@
 import type { CellValue, DataRow, Dataset, DatasetColumn } from '../dataset/types';
-import type { ColumnDefinition, Expression, FilterOperator, TransformCommand } from './types';
+import type {
+  ColumnDefinition,
+  Expression,
+  FilterOperator,
+  TransformCommand,
+  TransformConditionNode,
+  TransformConditionOperand,
+  TransformConditionOperator,
+} from './types';
 
 function hasColumn(dataset: Dataset, columnId: string): void {
   if (!dataset.columns.some((column) => column.id === columnId)) {
@@ -43,6 +51,63 @@ function compareValues(left: CellValue, right: CellValue): number {
   return String(left).localeCompare(String(right));
 }
 
+function sameValue(left: CellValue, right: CellValue): boolean {
+  if (isEmpty(left) && isEmpty(right)) return true;
+  return left === right;
+}
+
+function conditionOperandValue(operand: TransformConditionOperand, row: DataRow): CellValue {
+  return operand.type === 'column' ? row.values[operand.columnId] ?? null : operand.value;
+}
+
+function validateConditionNode(dataset: Dataset, node: TransformConditionNode): void {
+  if (node.type === 'group') {
+    if (node.children.length === 0) throw new RangeError('Condition groups must contain at least one condition');
+    node.children.forEach((child) => validateConditionNode(dataset, child));
+    return;
+  }
+
+  hasColumn(dataset, node.columnId);
+  if (node.operator === 'isEmpty' || node.operator === 'notEmpty') return;
+  if (!node.operand) throw new RangeError(`Condition operator ${node.operator} needs an operand`);
+  if (node.operand.type === 'column') hasColumn(dataset, node.operand.columnId);
+}
+
+function compareConditionValues(
+  left: CellValue,
+  operator: TransformConditionOperator,
+  right?: CellValue,
+): boolean {
+  switch (operator) {
+    case 'isEmpty': return isEmpty(left);
+    case 'notEmpty': return !isEmpty(left);
+    case 'equals': return right !== undefined && sameValue(left, right);
+    case 'notEquals': return right !== undefined && !sameValue(left, right);
+    case 'contains': return right !== undefined && !isEmpty(left) && toText(left).includes(toText(right));
+    case 'greaterThan': return right !== undefined && !isEmpty(left) && !isEmpty(right) && compareValues(left, right) > 0;
+    case 'greaterThanOrEqual': return right !== undefined && !isEmpty(left) && !isEmpty(right) && compareValues(left, right) >= 0;
+    case 'lessThan': return right !== undefined && !isEmpty(left) && !isEmpty(right) && compareValues(left, right) < 0;
+    case 'lessThanOrEqual': return right !== undefined && !isEmpty(left) && !isEmpty(right) && compareValues(left, right) <= 0;
+  }
+}
+
+function matchesCondition(node: TransformConditionNode, row: DataRow): boolean {
+  if (node.type === 'group') {
+    return node.operator === 'and'
+      ? node.children.every((child) => matchesCondition(child, row))
+      : node.children.some((child) => matchesCondition(child, row));
+  }
+  return compareConditionValues(
+    row.values[node.columnId] ?? null,
+    node.operator,
+    node.operand ? conditionOperandValue(node.operand, row) : undefined,
+  );
+}
+
+function matchesWhen(row: DataRow, when?: TransformConditionNode): boolean {
+  return when ? matchesCondition(when, row) : true;
+}
+
 export function compareDataRows(
   left: DataRow,
   right: DataRow,
@@ -61,7 +126,7 @@ export function compareDataRows(
 
 function matchesFilter(value: CellValue, operator: FilterOperator, expected?: CellValue): boolean {
   switch (operator) {
-    case 'equals': return value === expected;
+    case 'equals': return expected !== undefined && sameValue(value, expected);
     case 'contains': return toText(value).includes(toText(expected ?? null));
     case 'isEmpty': return isEmpty(value);
     case 'notEmpty': return !isEmpty(value);
@@ -164,11 +229,14 @@ function stableKey(values: readonly CellValue[]): string {
   return JSON.stringify(values.map((value) => [typeof value, value]));
 }
 
-function replaceLiteral(value: CellValue, find: string, replacement: string, caseSensitive: boolean): CellValue {
+function replaceLiteral(value: CellValue, find: CellValue, replacement: CellValue, caseSensitive: boolean): CellValue {
+  if (find === null || find === '') return isEmpty(value) ? replacement : value;
+  if (typeof find !== 'string') return sameValue(value, find) ? replacement : value;
   if (typeof value !== 'string' || find === '') return value;
-  if (caseSensitive) return value.replaceAll(find, replacement);
+  const replacementText = replacement === null ? '' : String(replacement);
+  if (caseSensitive) return value.replaceAll(find, replacementText);
   const escaped = find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return value.replace(new RegExp(escaped, 'gi'), replacement);
+  return value.replace(new RegExp(escaped, 'gi'), replacementText);
 }
 
 export function applyTransform(dataset: Dataset, command: TransformCommand): Dataset {
@@ -217,10 +285,14 @@ export function applyTransform(dataset: Dataset, command: TransformCommand): Dat
       hasColumn(dataset, command.columnId);
       if (command.newColumns.length === 0 || command.delimiter === '') throw new RangeError('Split needs columns and a delimiter');
       assertNewColumns(dataset, command.newColumns);
+      if (command.when) validateConditionNode(dataset, command.when);
       const sourceIndex = dataset.columns.findIndex((column) => column.id === command.columnId);
       let columns = dataset.columns;
       command.newColumns.forEach((column, index) => { columns = appendColumn(copyDataset(dataset, columns), column, sourceIndex + index + 1); });
       return copyDataset(dataset, columns, dataset.rows.map((row) => {
+        if (!matchesWhen(row, command.when)) {
+          return { ...row, values: { ...row.values, ...Object.fromEntries(command.newColumns.map((column) => [column.id, null])) } };
+        }
         const sourceValue = row.values[command.columnId];
         const parts = typeof sourceValue === 'string' ? sourceValue.split(command.delimiter) : [];
         return { ...row, values: { ...row.values, ...Object.fromEntries(command.newColumns.map((column, index) => [column.id, parts[index] || null])) } };
@@ -229,46 +301,76 @@ export function applyTransform(dataset: Dataset, command: TransformCommand): Dat
     case 'combineColumns': {
       assertKnownColumns(dataset, command.columnIds);
       assertNewColumns(dataset, [command.newColumn]);
+      if (command.when) validateConditionNode(dataset, command.when);
       return copyDataset(dataset, appendColumn(dataset, command.newColumn), dataset.rows.map((row) => ({
         ...row,
-        values: { ...row.values, [command.newColumn.id]: command.columnIds.map((columnId) => row.values[columnId]).filter((value) => !isEmpty(value)).map(toText).join(command.separator) || null },
+        values: {
+          ...row.values,
+          [command.newColumn.id]: !matchesWhen(row, command.when)
+            ? null
+            : command.columnIds.map((columnId) => row.values[columnId]).filter((value) => !isEmpty(value)).map(toText).join(command.separator) || null,
+        },
       })));
     }
     case 'findReplace':
       assertKnownColumns(dataset, command.columnIds);
-      return replaceValues(dataset, (row) => ({ ...row.values, ...Object.fromEntries(command.columnIds.map((columnId) => [columnId, replaceLiteral(row.values[columnId], command.find, command.replace, command.caseSensitive ?? false)])) }));
+      if (command.when) validateConditionNode(dataset, command.when);
+      return replaceValues(dataset, (row) => !matchesWhen(row, command.when)
+        ? row.values
+        : { ...row.values, ...Object.fromEntries(command.columnIds.map((columnId) => [columnId, replaceLiteral(row.values[columnId], command.find, command.replace, command.caseSensitive ?? false)])) });
     case 'dateConversion':
       hasColumn(dataset, command.columnId);
+      if (command.when) validateConditionNode(dataset, command.when);
       return replaceValues(copyDataset(dataset, dataset.columns.map((column) => column.id === command.columnId ? { ...column, detectedType: 'date' } : column)), (row) => {
+        if (!matchesWhen(row, command.when)) return row.values;
         const date = parseDate(row.values[command.columnId], command.inputFormat);
         return { ...row.values, [command.columnId]: date === null ? null : formatDate(date, command.outputFormat) };
       });
     case 'numberConversion':
       hasColumn(dataset, command.columnId);
-      return replaceValues(copyDataset(dataset, dataset.columns.map((column) => column.id === command.columnId ? { ...column, detectedType: 'number' } : column)), (row) => ({ ...row.values, [command.columnId]: parseNumber(row.values[command.columnId], command.decimalSeparator) }));
+      if (command.when) validateConditionNode(dataset, command.when);
+      return replaceValues(copyDataset(dataset, dataset.columns.map((column) => column.id === command.columnId ? { ...column, detectedType: 'number' } : column)), (row) => !matchesWhen(row, command.when)
+        ? row.values
+        : { ...row.values, [command.columnId]: parseNumber(row.values[command.columnId], command.decimalSeparator) });
     case 'currencyConversion': {
       hasColumn(dataset, command.columnId);
+      if (command.when) validateConditionNode(dataset, command.when);
       const formatter = new Intl.NumberFormat(command.locale, { style: 'currency', currency: command.currency });
       return replaceValues(copyDataset(dataset, dataset.columns.map((column) => column.id === command.columnId ? { ...column, detectedType: 'string' } : column)), (row) => {
+        if (!matchesWhen(row, command.when)) return row.values;
         const value = row.values[command.columnId];
         return { ...row.values, [command.columnId]: typeof value === 'number' && Number.isFinite(value) ? formatter.format(value) : null };
       });
     }
     case 'prefix':
       hasColumn(dataset, command.columnId);
-      return replaceValues(dataset, (row) => ({ ...row.values, [command.columnId]: isEmpty(row.values[command.columnId]) ? row.values[command.columnId] : `${command.value}${toText(row.values[command.columnId])}` }));
+      if (command.when) validateConditionNode(dataset, command.when);
+      return replaceValues(dataset, (row) => !matchesWhen(row, command.when)
+        ? row.values
+        : { ...row.values, [command.columnId]: isEmpty(row.values[command.columnId]) ? row.values[command.columnId] : `${command.value}${toText(row.values[command.columnId])}` });
     case 'suffix':
       hasColumn(dataset, command.columnId);
-      return replaceValues(dataset, (row) => ({ ...row.values, [command.columnId]: isEmpty(row.values[command.columnId]) ? row.values[command.columnId] : `${toText(row.values[command.columnId])}${command.value}` }));
+      if (command.when) validateConditionNode(dataset, command.when);
+      return replaceValues(dataset, (row) => !matchesWhen(row, command.when)
+        ? row.values
+        : { ...row.values, [command.columnId]: isEmpty(row.values[command.columnId]) ? row.values[command.columnId] : `${toText(row.values[command.columnId])}${command.value}` });
     case 'fixedValue':
       hasColumn(dataset, command.columnId);
-      return replaceValues(dataset, (row) => ({ ...row.values, [command.columnId]: command.value }));
+      if (command.when) validateConditionNode(dataset, command.when);
+      return replaceValues(dataset, (row) => !matchesWhen(row, command.when)
+        ? row.values
+        : { ...row.values, [command.columnId]: command.value });
     case 'calculatedColumn':
       assertNewColumns(dataset, [command.newColumn]);
-      return copyDataset(dataset, appendColumn(dataset, command.newColumn), dataset.rows.map((row) => ({ ...row, values: { ...row.values, [command.newColumn.id]: evaluateExpression(command.expression, row) } })));
+      if (command.when) validateConditionNode(dataset, command.when);
+      return copyDataset(dataset, appendColumn(dataset, command.newColumn), dataset.rows.map((row) => ({
+        ...row,
+        values: { ...row.values, [command.newColumn.id]: matchesWhen(row, command.when) ? evaluateExpression(command.expression, row) : null },
+      })));
     case 'conditionalRule':
       assertKnownColumns(dataset, command.updates.map((update) => update.columnId));
-      return replaceValues(dataset, (row) => Boolean(evaluateExpression(command.condition, row))
+      validateConditionNode(dataset, command.condition);
+      return replaceValues(dataset, (row) => matchesCondition(command.condition, row)
         ? { ...row.values, ...Object.fromEntries(command.updates.map((update) => [update.columnId, update.value])) }
         : row.values);
     case 'editCell':

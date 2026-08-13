@@ -8,11 +8,12 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
-import type { Dataset, DatasetColumn } from '../domain/dataset/types';
+import type { CellValue, Dataset, DatasetColumn } from '../domain/dataset/types';
 import { makeColumnId } from '../domain/dataset/column-id';
 import { suggestMappings } from '../domain/mapping/suggest-mappings';
 import type { WriteMode, WritePlan } from '../domain/merge/types';
-import type { TransformCommand } from '../domain/transforms/types';
+import type { FilterOperator, TransformCommand, TransformConditionNode } from '../domain/transforms/types';
+import { detectDateFormats, detectDecimalSeparator, getSuggestedDelimiters } from '../domain/transforms/transform-values';
 import { validateDataset } from '../domain/validation/validate-row';
 import { validateConditionalMatrixRule } from '../domain/validation/matrix';
 import type { ValidationIssue, ValidationResult, ValidationRule } from '../domain/validation/types';
@@ -44,6 +45,8 @@ import {
 } from './components/MappingGrid';
 import { Stepper, type WorkflowStepDefinition } from './components/Stepper';
 import { ValidationPanel } from './components/ValidationPanel';
+import { ConditionBuilder } from './components/ConditionBuilder';
+import { ValuePicker } from './components/ValuePicker';
 import { createSessionStore, type FileMetadata } from './state/session-store';
 
 const STEPS = [
@@ -1307,12 +1310,46 @@ function TransformationEditor({
   const [secondColumnId, setSecondColumnId] = useState(dataset.columns[1]?.id ?? dataset.columns[0]?.id ?? '');
   const [value, setValue] = useState('');
   const [extra, setExtra] = useState('');
+  const [typedValue, setTypedValue] = useState<CellValue>(null);
+  const [typedExtraValue, setTypedExtraValue] = useState<CellValue>(null);
   const [operator, setOperator] = useState('+');
+  const [filterOperator, setFilterOperator] = useState<FilterOperator>('contains');
+  const [when, setWhen] = useState<TransformConditionNode | undefined>();
+
+  useEffect(() => {
+    setValue('');
+    setExtra('');
+    setTypedValue(null);
+    setTypedExtraValue(null);
+    setWhen(undefined);
+  }, [columnId, type]);
 
   const add = () => {
-    const command = buildTransform(type, { columnId, secondColumnId, value, extra, operator }, dataset);
+    const command = buildTransform(type, {
+      columnId,
+      secondColumnId,
+      value,
+      extra,
+      typedValue,
+      typedExtraValue,
+      operator,
+      filterOperator,
+      when,
+    }, dataset);
     if (command) onReplace([...commands, command]);
   };
+
+  const valuePickerTypes = ['findReplace', 'fixedValue'].includes(type)
+    || (type === 'filter' && !['isEmpty', 'notEmpty'].includes(filterOperator));
+  const supportsWhen = ['findReplace', 'splitColumn', 'combineColumns', 'dateConversion', 'numberConversion', 'currencyConversion', 'prefix', 'suffix', 'fixedValue', 'calculatedColumn'].includes(type);
+  const inferredSuggestions = type === 'splitColumn'
+    ? getSuggestedDelimiters(dataset, columnId)
+    : type === 'dateConversion'
+      ? detectDateFormats(dataset, columnId)
+      : type === 'numberConversion'
+        ? [detectDecimalSeparator(dataset, columnId)]
+        : [];
+  const suggestionListId = `transform-suggestions-${type}`;
 
   return (
     <div className="transform-layout">
@@ -1337,21 +1374,73 @@ function TransformationEditor({
             </select>
           </label>
         ) : null}
-        {['calculatedColumn', 'conditionalRule'].includes(type) ? (
+        {type === 'filter' ? (
+          <label>Operador do filtro
+            <select value={filterOperator} disabled={busy} onChange={(event) => setFilterOperator(event.currentTarget.value as FilterOperator)}>
+              <option value="equals">Igual a</option>
+              <option value="contains">Contém</option>
+              <option value="isEmpty">Está vazio</option>
+              <option value="notEmpty">Não está vazio</option>
+              <option value="greaterThan">Maior que</option>
+              <option value="lessThan">Menor que</option>
+            </select>
+          </label>
+        ) : null}
+        {['calculatedColumn'].includes(type) ? (
           <label>Operador suportado
             <select value={operator} disabled={busy} onChange={(event) => setOperator(event.currentTarget.value)}>
               {['+', '-', '*', '/', '==', '!=', '>', '>=', '<', '<=', 'and', 'or'].map((item) => <option value={item} key={item}>{item}</option>)}
             </select>
           </label>
         ) : null}
-        <label>{transformValueLabel(type)}
-          <input value={value} disabled={busy} onChange={(event) => setValue(event.currentTarget.value)} />
-        </label>
-        {['findReplace', 'combineColumns', 'splitColumn', 'conditionalRule', 'calculatedColumn'].includes(type) ? (
+        {valuePickerTypes ? (
+          <ValuePicker
+            dataset={dataset}
+            columnId={columnId}
+            label={transformValueLabel(type)}
+            value={typedValue}
+            disabled={busy}
+            onChange={setTypedValue}
+          />
+        ) : type !== 'conditionalRule' ? (
+          <label>{transformValueLabel(type)}
+            <input list={inferredSuggestions.length > 0 ? suggestionListId : undefined} value={value} disabled={busy} onChange={(event) => setValue(event.currentTarget.value)} />
+          </label>
+        ) : null}
+        {inferredSuggestions.length > 0 ? (
+          <datalist id={suggestionListId}>
+            {inferredSuggestions.map((suggestion) => <option value={suggestion} key={suggestion} />)}
+          </datalist>
+        ) : null}
+        {type === 'findReplace' ? (
+          <ValuePicker
+            dataset={dataset}
+            columnId={columnId}
+            label="Substituir por"
+            value={typedExtraValue}
+            disabled={busy}
+            onChange={setTypedExtraValue}
+          />
+        ) : null}
+        {['combineColumns', 'splitColumn', 'calculatedColumn'].includes(type) ? (
           <label>{transformExtraLabel(type)}
             <input value={extra} disabled={busy} onChange={(event) => setExtra(event.currentTarget.value)} />
           </label>
         ) : null}
+        {type === 'conditionalRule' ? (
+          <>
+            <ConditionBuilder dataset={dataset} value={when} required disabled={busy} onChange={setWhen} />
+            <ValuePicker
+              dataset={dataset}
+              columnId={secondColumnId}
+              label="Valor a gravar"
+              value={typedExtraValue}
+              disabled={busy}
+              onChange={setTypedExtraValue}
+            />
+          </>
+        ) : null}
+        {supportsWhen ? <ConditionBuilder dataset={dataset} value={when} disabled={busy} onChange={setWhen} /> : null}
         {type === 'calculatedColumn' ? <p className="form-help">A expressão é convertida para a AST segura; JavaScript livre não é aceito.</p> : null}
         <button type="button" className="primary-button" disabled={busy || columnId === ''} onClick={add}>Adicionar transformação</button>
       </section>
@@ -1410,49 +1499,58 @@ function transformExtraLabel(type: Exclude<TransformCommand['type'], 'editCell'>
 
 function buildTransform(
   type: Exclude<TransformCommand['type'], 'editCell'>,
-  form: { columnId: string; secondColumnId: string; value: string; extra: string; operator: string },
+  form: {
+    columnId: string;
+    secondColumnId: string;
+    value: string;
+    extra: string;
+    typedValue: CellValue;
+    typedExtraValue: CellValue;
+    operator: string;
+    filterOperator: FilterOperator;
+    when?: TransformConditionNode;
+  },
   dataset: Dataset,
 ): TransformCommand | null {
   const newColumn = (header: string) => ({ id: makeColumnId(header || 'Nova coluna', dataset.columns.length), header: header || 'Nova coluna' });
+  const withCondition = <T extends object>(command: T): T & { when?: TransformConditionNode } => form.when ? { ...command, when: form.when } : command;
   switch (type) {
     case 'reorderColumns': return { type, columnIds: [form.columnId, ...dataset.columns.map(({ id }) => id).filter((id) => id !== form.columnId)] };
     case 'sort': return { type, sorts: [{ columnId: form.columnId, direction: form.value === 'desc' ? 'desc' : 'asc' }] };
-    case 'filter': return { type, columnId: form.columnId, operator: 'contains', value: form.value };
+    case 'filter': return { type, columnId: form.columnId, operator: form.filterOperator, value: form.typedValue };
     case 'removeEmptyRows': return { type, columnIds: [form.columnId] };
     case 'deduplicate': return { type, columnIds: [form.columnId], keep: form.value === 'last' ? 'last' : 'first' };
     case 'renameHeader': return { type, columnId: form.columnId, header: form.value || 'Sem título' };
     case 'splitColumn': {
       const headers = form.extra.split(',').map((header) => header.trim()).filter(Boolean);
       const finalHeaders = headers.length > 0 ? headers : ['Parte 1', 'Parte 2'];
-      return { type, columnId: form.columnId, delimiter: form.value || ' ', newColumns: finalHeaders.map((header, index) => ({ id: makeColumnId(header, dataset.columns.length + index), header })) };
+      return withCondition({ type, columnId: form.columnId, delimiter: form.value || ' ', newColumns: finalHeaders.map((header, index) => ({ id: makeColumnId(header, dataset.columns.length + index), header })) });
     }
-    case 'combineColumns': return { type, columnIds: [form.columnId, form.secondColumnId], separator: form.value, newColumn: newColumn(form.extra) };
-    case 'findReplace': return { type, columnIds: [form.columnId], find: form.value, replace: form.extra, caseSensitive: false };
-    case 'dateConversion': return { type, columnId: form.columnId, inputFormat: 'auto', outputFormat: form.value === 'dd/MM/yyyy' ? 'dd/MM/yyyy' : 'yyyy-MM-dd' };
-    case 'numberConversion': return { type, columnId: form.columnId, decimalSeparator: form.value === ',' ? ',' : '.' };
-    case 'currencyConversion': return { type, columnId: form.columnId, locale: form.value || 'pt-BR', currency: form.extra || 'BRL' };
-    case 'prefix': return { type, columnId: form.columnId, value: form.value };
-    case 'suffix': return { type, columnId: form.columnId, value: form.value };
-    case 'fixedValue': return { type, columnId: form.columnId, value: form.value };
-    case 'calculatedColumn': return {
-      type,
-      newColumn: newColumn(form.value),
-      expression: {
-        type: 'binary',
-        operator: form.operator as Extract<TransformCommand, { type: 'calculatedColumn' }>['expression'] extends { type: 'binary'; operator: infer Operator } ? Operator : never,
-        left: { type: 'column', columnId: form.columnId },
-        right: form.extra === '' ? { type: 'column', columnId: form.secondColumnId } : { type: 'literal', value: Number.isFinite(Number(form.extra)) ? Number(form.extra) : form.extra },
-      },
-    };
+    case 'combineColumns': return withCondition({ type, columnIds: [form.columnId, form.secondColumnId], separator: form.value, newColumn: newColumn(form.extra) });
+    case 'findReplace': return withCondition({ type, columnIds: [form.columnId], find: form.typedValue, replace: form.typedExtraValue, caseSensitive: false });
+    case 'dateConversion': return withCondition({ type, columnId: form.columnId, inputFormat: 'auto' as const, outputFormat: (form.value === 'dd/MM/yyyy' ? 'dd/MM/yyyy' : 'yyyy-MM-dd') as 'dd/MM/yyyy' | 'yyyy-MM-dd' });
+    case 'numberConversion': return withCondition({ type, columnId: form.columnId, decimalSeparator: (form.value === ',' ? ',' : '.') as '.' | ',' });
+    case 'currencyConversion': return withCondition({ type, columnId: form.columnId, locale: form.value || 'pt-BR', currency: form.extra || 'BRL' });
+    case 'prefix': return withCondition({ type, columnId: form.columnId, value: form.value });
+    case 'suffix': return withCondition({ type, columnId: form.columnId, value: form.value });
+    case 'fixedValue': return withCondition({ type, columnId: form.columnId, value: form.typedValue });
+    case 'calculatedColumn': {
+      const command: Extract<TransformCommand, { type: 'calculatedColumn' }> = {
+        type,
+        newColumn: newColumn(form.value),
+        expression: {
+          type: 'binary',
+          operator: form.operator as '+' | '-' | '*' | '/' | '==' | '!=' | '>' | '>=' | '<' | '<=' | 'and' | 'or',
+          left: { type: 'column', columnId: form.columnId },
+          right: form.extra === '' ? { type: 'column', columnId: form.secondColumnId } : { type: 'literal', value: Number.isFinite(Number(form.extra)) ? Number(form.extra) : form.extra },
+        },
+      };
+      return form.when ? { ...command, when: form.when } : command;
+    }
     case 'conditionalRule': return {
       type,
-      condition: {
-        type: 'binary',
-        operator: form.operator as Extract<TransformCommand, { type: 'conditionalRule' }>['condition'] extends { type: 'binary'; operator: infer Operator } ? Operator : never,
-        left: { type: 'column', columnId: form.columnId },
-        right: { type: 'literal', value: Number.isFinite(Number(form.value)) ? Number(form.value) : form.value },
-      },
-      updates: [{ columnId: form.secondColumnId, value: form.extra }],
+      condition: form.when ?? { type: 'predicate', columnId: form.columnId, operator: 'equals', operand: { type: 'literal', value: form.typedValue } },
+      updates: [{ columnId: form.secondColumnId, value: form.typedExtraValue }],
     };
   }
 }
@@ -1531,6 +1629,12 @@ const APP_STYLES = `
   .transform-form h3, .command-stack h3, .panel-section h3 { margin: 0; }
   .transform-form label, .inline-form label { display: grid; gap: 5px; color: #4f6259; font-size: 12px; font-weight: 750; }
   .form-help { margin: 0; color: #708078; font-size: 12px; }
+  .form-error { margin: 0; color: #a53a3a; font-size: 12px; }
+  .value-picker { display: grid; gap: 4px; }
+  .condition-builder, .condition-group, .condition-row { display: grid; gap: 10px; padding: 12px; border: 1px solid #d5e1da; border-radius: 10px; background: #f7faf8; }
+  .condition-builder legend, .condition-group legend, .condition-row legend { padding: 0 5px; color: #3d5f4e; font-size: 12px; font-weight: 800; }
+  .condition-row { background: white; }
+  .condition-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .command-toolbar { display: flex; align-items: center; gap: 7px; }
   .command-toolbar h3 { margin-right: auto; }
   .command-toolbar button, .command-stack li button { min-height: 32px; padding: 5px 9px; border: 1px solid #cbd5d0; color: #355146; background: white; }

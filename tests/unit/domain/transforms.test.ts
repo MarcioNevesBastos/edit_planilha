@@ -90,9 +90,43 @@ describe('applyTransform', () => {
       assert: (result) => expect(result.rows.map((row) => row.values.label__1)).toEqual(['Ana Silva - Sao Paulo', 'Bruno - Rio', 'Ana Silva']),
     },
     {
+      name: 'creates nulls in new columns when a condition does not match',
+      command: {
+        type: 'combineColumns',
+        columnIds: ['name__1', 'city__1'],
+        separator: ' - ',
+        newColumn: { id: 'label__1', header: 'Label' },
+        when: { type: 'predicate', columnId: 'amount__1', operator: 'greaterThan', operand: { type: 'literal', value: 5 } },
+      },
+      assert: (result) => expect(result.rows.map((row) => row.values.label__1)).toEqual(['Ana Silva - Sao Paulo', null, null]),
+    },
+    {
       name: 'finds and replaces literal text',
       command: { type: 'findReplace', columnIds: ['city__1'], find: 'Sao', replace: 'São', caseSensitive: true },
       assert: (result) => expect(result.rows.map((row) => row.values.city__1)).toEqual(['São Paulo', 'Rio', '']),
+    },
+    {
+      name: 'replaces typed numeric values only when the condition matches',
+      command: {
+        type: 'findReplace',
+        columnIds: ['amount__1'],
+        find: 10,
+        replace: 20,
+        when: {
+          type: 'group',
+          operator: 'or',
+          children: [
+            { type: 'predicate', columnId: 'amount__1', operator: 'greaterThan', operand: { type: 'literal', value: 5 } },
+            { type: 'predicate', columnId: 'city__1', operator: 'equals', operand: { type: 'literal', value: 'Rio' } },
+          ],
+        },
+      },
+      assert: (result) => expect(result.rows.map((row) => row.values.amount__1)).toEqual([20, 2, null]),
+    },
+    {
+      name: 'treats null and empty text as the same empty value',
+      command: { type: 'findReplace', columnIds: ['city__1'], find: null, replace: 'Sem cidade' },
+      assert: (result) => expect(result.rows.map((row) => row.values.city__1)).toEqual(['Sao Paulo', 'Rio', 'Sem cidade']),
     },
     {
       name: 'converts dates to the requested format',
@@ -131,7 +165,11 @@ describe('applyTransform', () => {
     },
     {
       name: 'applies updates only when a constrained condition matches',
-      command: { type: 'conditionalRule', condition: { type: 'binary', operator: '>', left: { type: 'column', columnId: 'amount__1' }, right: { type: 'literal', value: 5 } }, updates: [{ columnId: 'city__1', value: 'Maior' }] },
+      command: {
+        type: 'conditionalRule',
+        condition: { type: 'predicate', columnId: 'amount__1', operator: 'greaterThan', operand: { type: 'literal', value: 5 } },
+        updates: [{ columnId: 'city__1', value: 'Maior' }],
+      },
       assert: (result) => expect(result.rows.map((row) => row.values.city__1)).toEqual(['Maior', 'Rio', '']),
     },
     {
@@ -160,5 +198,44 @@ describe('applyTransform', () => {
     });
 
     expect(result.rows.map((row) => row.rowId)).toEqual(['r2']);
+  });
+
+  it('filters null and empty text together when selecting the empty value', () => {
+    const result = applyTransform(dataset, {
+      type: 'filter',
+      columnId: 'city__1',
+      operator: 'equals',
+      value: null,
+    });
+
+    expect(result.rows.map((row) => row.rowId)).toEqual(['r3']);
+  });
+
+  it('applies the same row condition to conversions, affixes, fixed values, and calculated columns', () => {
+    const when = { type: 'predicate' as const, columnId: 'amount__1', operator: 'greaterThan' as const, operand: { type: 'literal' as const, value: 5 } };
+
+    expect(applyTransform(dataset, { type: 'dateConversion', columnId: 'date__1', inputFormat: 'auto', outputFormat: 'yyyy-MM-dd', when }).rows.map((row) => row.values.date__1))
+      .toEqual(['2026-01-31', '2026-02-01', null]);
+    expect(applyTransform(dataset, { type: 'currencyConversion', columnId: 'amount__1', locale: 'en-US', currency: 'USD', when }).rows.map((row) => row.values.amount__1))
+      .toEqual(['$10.00', 2, null]);
+    expect(applyTransform(dataset, { type: 'prefix', columnId: 'name__1', value: 'Dr. ', when }).rows.map((row) => row.values.name__1))
+      .toEqual(['Dr. Ana Silva', 'Bruno', 'Ana Silva']);
+    expect(applyTransform(dataset, { type: 'suffix', columnId: 'name__1', value: '!', when }).rows.map((row) => row.values.name__1))
+      .toEqual(['Ana Silva!', 'Bruno', 'Ana Silva']);
+    expect(applyTransform(dataset, { type: 'fixedValue', columnId: 'city__1', value: 'Brasil', when }).rows.map((row) => row.values.city__1))
+      .toEqual(['Brasil', 'Rio', '']);
+    expect(applyTransform(dataset, {
+      type: 'splitColumn',
+      columnId: 'name__1',
+      delimiter: ' ',
+      newColumns: [{ id: 'first__1', header: 'First' }, { id: 'last__1', header: 'Last' }],
+      when,
+    }).rows.map((row) => [row.values.first__1, row.values.last__1])).toEqual([['Ana', 'Silva'], [null, null], [null, null]]);
+    expect(applyTransform(dataset, {
+      type: 'calculatedColumn',
+      newColumn: { id: 'double__1', header: 'Double' },
+      expression: { type: 'binary', operator: '*', left: { type: 'column', columnId: 'amount__1' }, right: { type: 'literal', value: 2 } },
+      when,
+    }).rows.map((row) => row.values.double__1)).toEqual([20, null, null]);
   });
 });

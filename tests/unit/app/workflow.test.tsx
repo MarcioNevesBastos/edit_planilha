@@ -344,6 +344,37 @@ describe('workflow navigation', () => {
     expect(screen.getByRole('button', { name: 'Avançar' })).toBeDisabled();
   });
 
+  it('selects values from the active column and sends optional conditions with replacement', async () => {
+    const user = userEvent.setup();
+    const worker = new FakeWorker();
+    render(<App workerFactory={() => worker} />);
+
+    await importSource(user);
+    await chooseTemplate(user);
+    await chooseDestination(user);
+    await user.click(screen.getByRole('button', { name: 'Aceitar ID' }));
+    await user.click(screen.getByRole('button', { name: 'Ignorar Nome' }));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+
+    await user.selectOptions(screen.getByLabelText('Tipo de transformação'), 'findReplace');
+    await user.selectOptions(screen.getByLabelText('Coluna principal'), 'nome__1');
+    await user.selectOptions(screen.getByLabelText('Sugestões para Localizar'), 'string:Ana');
+    await user.selectOptions(screen.getByLabelText('Sugestões para Substituir por'), 'string:Bruno');
+    await user.click(screen.getByLabelText('Aplicar condicionantes'));
+    await user.click(screen.getByRole('button', { name: 'Adicionar transformação' }));
+
+    const request = worker.requests.filter(({ type }) => type === 'APPLY_TRANSFORMS').at(-1);
+    expect(request?.type).toBe('APPLY_TRANSFORMS');
+    if (request?.type === 'APPLY_TRANSFORMS') {
+      expect(request.commands[0]).toMatchObject({
+        type: 'findReplace',
+        find: 'Ana',
+        replace: 'Bruno',
+        when: { type: 'group', operator: 'and' },
+      });
+    }
+  });
+
   it('blocks duplicate destinations even after both mappings are accepted', async () => {
     const user = userEvent.setup();
     const worker = new FakeWorker();

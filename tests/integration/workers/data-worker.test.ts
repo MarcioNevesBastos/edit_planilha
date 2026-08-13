@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import type { DataRow, Dataset } from '../../../src/domain/dataset/types';
+import { applyTransform } from '../../../src/domain/transforms/apply-transform';
 import type { WorkerResponse } from '../../../src/workers/protocol';
 import { createDataWorkerDispatcher } from '../../../src/workers/data-worker';
 
@@ -50,6 +51,43 @@ describe('data worker dispatcher', () => {
     expect(transform).toMatchObject({ result: { dataset: { rows: [{ values: { name__1: 'Dr. Ana' } }] } } });
     const plan = messages.find((message) => message.type === 'RESULT' && message.operationId === 'plan');
     expect(plan).toMatchObject({ result: { writePlan: { inserts: [{ destinationRow: 2 }] } } });
+  });
+
+  it('keeps conditional typed replacements equivalent across worker batches', async () => {
+    const messages: WorkerResponse[] = [];
+    const dispatcher = createDataWorkerDispatcher((message) => messages.push(message));
+    const input: Dataset = {
+      columns: [
+        { id: 'name__1', header: 'Name', sourceIndex: 0, detectedType: 'string' },
+        { id: 'amount__1', header: 'Amount', sourceIndex: 1, detectedType: 'number' },
+      ],
+      rows: [
+        row('r-1', 2, { name__1: 'Ana', amount__1: 10 }),
+        row('r-2', 3, { name__1: 'Ana', amount__1: 2 }),
+        row('r-3', 4, { name__1: 'Bia', amount__1: 10 }),
+      ],
+    };
+    const command = {
+      type: 'findReplace' as const,
+      columnIds: ['name__1'],
+      find: 'Ana',
+      replace: 'Aline',
+      when: { type: 'predicate' as const, columnId: 'amount__1', operator: 'greaterThan' as const, operand: { type: 'literal' as const, value: 5 } },
+    };
+
+    await dispatcher.dispatch({
+      type: 'APPLY_TRANSFORMS',
+      operationId: 'conditional-transform',
+      dataset: input,
+      commands: [command],
+      batchSize: 1,
+    });
+
+    const response = messages.find((message): message is Extract<WorkerResponse, { type: 'RESULT' }> => (
+      message.type === 'RESULT' && message.operationId === 'conditional-transform'
+    ));
+    expect(response?.result).toMatchObject({ type: 'APPLY_TRANSFORMS', dataset: applyTransform(input, command) });
+    expect(messages.some((message) => message.type === 'PROGRESS' && message.operationId === 'conditional-transform' && message.phase === 'transform')).toBe(true);
   });
 
   it('validates conditional matrices in batches and preserves warning-only validity', async () => {
