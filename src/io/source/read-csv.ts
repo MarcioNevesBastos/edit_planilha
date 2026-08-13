@@ -23,7 +23,7 @@ export async function readCsv(file: File, options: Pick<ReadSourceOptions, 'deli
     .filter((value) => value !== '')
     .map(() => ({
       code: 'TooManyFields',
-      message: 'Source row contains populated fields beyond the header row',
+      message: 'A linha de origem contém campos preenchidos além do cabeçalho.',
       row: index + 2,
     })));
 

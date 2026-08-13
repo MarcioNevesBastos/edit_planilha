@@ -92,6 +92,7 @@ describe('readCsv', () => {
       issues: [expect.objectContaining({
         code: 'TooManyFields',
         row: 2,
+        message: 'A linha de origem contém campos preenchidos além do cabeçalho.',
       })],
     } satisfies Partial<SourceReadError>);
   });

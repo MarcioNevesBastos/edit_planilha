@@ -97,7 +97,7 @@ export async function scanExportRisks(input: ExportInput): Promise<ExportRisk[]>
     addRisk({
       code: 'unsupported-encrypted-package',
       severity: 'hard',
-      message: 'Encrypted OOXML packages are not supported.',
+      message: 'Pacotes OOXML criptografados não são suportados.',
     });
   }
 
@@ -107,7 +107,7 @@ export async function scanExportRisks(input: ExportInput): Promise<ExportRisk[]>
       addRisk({
         code: 'unsupported-macro-package',
         severity: 'hard',
-        message: 'Macro-enabled workbooks are outside the supported export format.',
+        message: 'Pastas de trabalho com macro estão fora do formato de exportação suportado.',
         partPath: '[Content_Types].xml',
       });
     }
@@ -119,7 +119,7 @@ export async function scanExportRisks(input: ExportInput): Promise<ExportRisk[]>
     addRisk({
       code: 'destination-sheet-not-found',
       severity: 'hard',
-      message: `Destination sheet was not found: ${input.destination.sheetName}`,
+      message: `Aba de destino não encontrada: ${input.destination.sheetName}`,
     });
     return risks;
   }
@@ -127,7 +127,7 @@ export async function scanExportRisks(input: ExportInput): Promise<ExportRisk[]>
     addRisk({
       code: 'protected-workbook',
       severity: 'hard',
-      message: 'The destination workbook is protected.',
+      message: 'A pasta de trabalho de destino está protegida.',
       partPath: index.workbookPath,
     });
   }
@@ -135,7 +135,7 @@ export async function scanExportRisks(input: ExportInput): Promise<ExportRisk[]>
     addRisk({
       code: 'protected-destination-sheet',
       severity: 'hard',
-      message: `Destination sheet is protected: ${sheet.name}`,
+      message: `A aba de destino está protegida: ${sheet.name}`,
       partPath: sheet.path,
     });
   }
@@ -165,7 +165,7 @@ export async function scanExportRisks(input: ExportInput): Promise<ExportRisk[]>
         addRisk({
           code: 'mapping-outside-destination',
           severity: 'hard',
-          message: `Mapped column ${mapping.destinationColumn} is outside ${input.destination.range}.`,
+          message: `A coluna mapeada ${mapping.destinationColumn} está fora de ${input.destination.range}.`,
           partPath: sheet.path,
         });
       }
@@ -275,7 +275,7 @@ function scanMappingRisks(input: ExportInput, addRisk: (risk: ExportRisk) => voi
     addRisk({
       code: 'empty-mappings',
       severity: 'hard',
-      message: 'At least one reviewed mapping or explicit ignore is required for export.',
+      message: 'A exportação exige pelo menos um mapeamento revisado ou uma ignorada explícita.',
     });
   }
   const destinationIds = new Set(input.destination.columns.map(({ id }) => id));
@@ -290,7 +290,7 @@ function scanMappingRisks(input: ExportInput, addRisk: (risk: ExportRisk) => voi
       addRisk({
         code: 'unreviewed-mapping',
         severity: 'hard',
-        message: `Mapping for ${mapping.sourceColumnId} has not been explicitly accepted.`,
+        message: `O mapeamento de ${mapping.sourceColumnId} não foi aceito explicitamente.`,
       });
       continue;
     }
@@ -301,7 +301,7 @@ function scanMappingRisks(input: ExportInput, addRisk: (risk: ExportRisk) => voi
       addRisk({
         code: 'unknown-destination-column',
         severity: 'hard',
-        message: `Mapped destination column was not found: ${mapping.destinationColumnId}`,
+        message: `Coluna de destino mapeada não encontrada: ${mapping.destinationColumnId}`,
       });
       continue;
     }
@@ -312,7 +312,7 @@ function scanMappingRisks(input: ExportInput, addRisk: (risk: ExportRisk) => voi
       addRisk({
         code: 'invalid-destination-column',
         severity: 'hard',
-        message: `Invalid destination column for ${mapping.destinationColumnId}.`,
+        message: `Coluna de destino inválida para ${mapping.destinationColumnId}.`,
       });
       continue;
     }
@@ -321,7 +321,7 @@ function scanMappingRisks(input: ExportInput, addRisk: (risk: ExportRisk) => voi
       addRisk({
         code: 'duplicate-destination-mapping',
         severity: 'hard',
-        message: `Multiple source columns map to destination column ${normalizedColumn}.`,
+        message: `Várias colunas de origem apontam para a coluna de destino ${normalizedColumn}.`,
       });
     }
     destinationColumns.add(normalizedColumn);
@@ -342,7 +342,7 @@ function scanMappingRisks(input: ExportInput, addRisk: (risk: ExportRisk) => voi
       addRisk({
         code: 'missing-planned-source-mapping',
         severity: 'hard',
-        message: `Planned source field ${sourceColumnId} does not have exactly one accepted mapping or ignore.`,
+        message: `O campo de origem planejado ${sourceColumnId} não possui exatamente um mapeamento aceito ou uma ignorada.`,
       });
     }
   }
@@ -354,7 +354,7 @@ function scanValidationState(input: ExportInput, addRisk: (risk: ExportRisk) => 
     addRisk({
       code: 'inconsistent-validation-state',
       severity: 'hard',
-      message: 'Validation state does not match its issue list.',
+      message: 'O estado de validação não corresponde à lista de problemas.',
     });
   }
 }
@@ -383,7 +383,7 @@ function scanDestinationGeometry(
     addRisk({
       code: 'invalid-destination-geometry',
       severity: 'hard',
-      message: 'Destination range, header, data-start, and template rows are inconsistent.',
+      message: 'O intervalo de destino, cabeçalho, início dos dados e linhas de modelo são inconsistentes.',
     });
   }
 
@@ -392,7 +392,7 @@ function scanDestinationGeometry(
       addRisk({
         code: 'invalid-destination-geometry',
         severity: 'hard',
-        message: `Invalid physical destination column: ${destination.column}.`,
+        message: `Coluna física de destino inválida: ${destination.column}.`,
       });
       continue;
     }
@@ -401,7 +401,7 @@ function scanDestinationGeometry(
       addRisk({
         code: 'invalid-destination-geometry',
         severity: 'hard',
-        message: `Destination column ${destination.column} is outside ${input.destination.range}.`,
+        message: `A coluna de destino ${destination.column} está fora de ${input.destination.range}.`,
       });
     }
   }
@@ -443,14 +443,14 @@ function scanNamedRangeRisks(
       addRisk({
         code: 'invalid-defined-name-metadata',
         severity: 'hard',
-        message: `Defined-name metadata does not identify ${input.destination.range}.`,
+        message: `Os metadados de nome definido não identificam ${input.destination.range}.`,
       });
     }
     if (declared?.formula && !canExtendDefinedNameFormula(declared.formula)) {
       addRisk({
         code: 'named-range-formula-unsupported',
         severity: 'hard',
-        message: `Defined-name formula cannot be extended safely: ${identity.name}.`,
+        message: `A fórmula de nome definido não pode ser estendida com segurança: ${identity.name}.`,
       });
     }
     return;
@@ -460,7 +460,7 @@ function scanNamedRangeRisks(
     addRisk({
       code: 'named-range-expansion-unsupported',
       severity: 'hard',
-      message: 'Appending to a named destination requires explicit defined-name metadata.',
+      message: 'A inclusão em um destino nomeado exige metadados explícitos de nome definido.',
     });
   }
 }
@@ -470,7 +470,7 @@ function scanPlanRisks(input: ExportInput, addRisk: (risk: ExportRisk) => void):
     addRisk({
       code: 'invalid-write-boundary',
       severity: 'hard',
-      message: 'Write plan header must precede the destination data rows.',
+      message: 'O cabeçalho do plano de escrita deve anteceder as linhas de dados de destino.',
     });
   }
   for (const action of [
@@ -483,14 +483,14 @@ function scanPlanRisks(input: ExportInput, addRisk: (risk: ExportRisk) => void):
       addRisk({
         code: 'write-outside-data-rows',
         severity: 'hard',
-        message: `Write row ${action.destinationRow} is outside destination data rows.`,
+        message: `A linha de escrita ${action.destinationRow} está fora das linhas de dados de destino.`,
       });
     }
     if (Number.isSafeInteger(action.destinationRow) && action.destinationRow > EXCEL_MAX_ROW) {
       addRisk({
         code: 'write-row-exceeds-excel-limit',
         severity: 'hard',
-        message: `Write row ${action.destinationRow} exceeds Excel's maximum row ${EXCEL_MAX_ROW}.`,
+        message: `A linha de escrita ${action.destinationRow} excede o máximo de linhas do Excel (${EXCEL_MAX_ROW}).`,
       });
     }
   }
@@ -500,14 +500,14 @@ function scanPlanRisks(input: ExportInput, addRisk: (risk: ExportRisk) => void):
         addRisk({
           code: 'non-finite-cell-value',
           severity: 'hard',
-          message: 'Non-finite numbers cannot be represented safely in OOXML cells.',
+          message: 'Números não finitos não podem ser representados com segurança em células OOXML.',
         });
       }
       if (typeof value === 'string' && containsForbiddenXmlCharacter(value)) {
         addRisk({
           code: 'forbidden-xml-character',
           severity: 'hard',
-          message: 'Cell text contains a character forbidden by XML 1.0.',
+          message: 'O texto da célula contém um caractere proibido pelo XML 1.0.',
         });
       }
     }
@@ -525,7 +525,7 @@ function scanPlanRisks(input: ExportInput, addRisk: (risk: ExportRisk) => void):
       addRisk({
         code: 'forbidden-xml-character',
         severity: 'hard',
-        message: 'Rejected-row text contains a character forbidden by XML 1.0.',
+        message: 'O texto da linha rejeitada contém um caractere proibido pelo XML 1.0.',
       });
     }
   }
@@ -548,7 +548,7 @@ function scanWorksheetRisks(
     addRisk({
       code: 'merged-cell-write-conflict',
       severity: 'hard',
-      message: 'A planned write intersects a merged cell range.',
+      message: 'Uma escrita planejada cruza um intervalo de células mescladas.',
       partPath: sheet.path,
     });
   }
@@ -572,7 +572,7 @@ function scanWorksheetRisks(
     addRisk({
       code: 'formula-overwrite',
       severity: 'soft',
-      message: 'A reviewed mapping writes over an existing formula cell.',
+      message: 'Um mapeamento revisado sobrescreve uma célula que contém fórmula.',
       partPath: sheet.path,
     });
   }
@@ -666,7 +666,7 @@ function updateDefinedName(
       && (localSheetId === null ? null : Number(localSheetId)) === definedName.localSheetId;
   });
   if (!match) {
-    throw new Error(`Defined name was not found: ${definedName.name}`);
+    throw new Error(`Nome definido não encontrado: ${definedName.name}`);
   }
   const formula = match[2];
   const updatedFormula = formula.replace(
@@ -674,7 +674,7 @@ function updateDefinedName(
     `$1${targetLastRow}`,
   );
   if (updatedFormula === formula) {
-    throw new Error(`Defined-name formula cannot be extended: ${definedName.name}`);
+    throw new Error(`A fórmula de nome definido não pode ser estendida: ${definedName.name}`);
   }
   pkg.updatePart(workbookPath, workbook.replace(match[0], `${match[1]}${updatedFormula}${match[3]}`));
 }
@@ -768,7 +768,7 @@ async function processExportRows<T>(
 
 function assertExportBatchSize(batchSize: number): void {
   if (!Number.isSafeInteger(batchSize) || batchSize < 1) {
-    throw new RangeError('batchSize must be a positive whole number');
+    throw new RangeError('batchSize deve ser um número inteiro positivo.');
   }
 }
 
@@ -782,7 +782,7 @@ function writeWorksheetCell(
   const ensured = ensureRow(worksheet, rowNumber, templateRow);
   const row = findRow(ensured, rowNumber);
   if (!row) {
-    throw new Error(`Destination row ${rowNumber} was not found after expansion.`);
+    throw new Error(`A linha de destino ${rowNumber} não foi encontrada após a expansão.`);
   }
   const reference = `${column.toUpperCase()}${rowNumber}`;
   const existing = findCell(row, reference);
@@ -806,12 +806,12 @@ function ensureRow(worksheet: string, rowNumber: number, templateRowNumber: numb
   }
   const template = findRow(worksheet, templateRowNumber);
   if (!template) {
-    throw new Error(`Template row ${templateRowNumber} was not found in worksheet.`);
+    throw new Error(`A linha de modelo ${templateRowNumber} não foi encontrada na planilha.`);
   }
   const shifted = shiftRow(template, rowNumber - templateRowNumber);
   const sheetData = worksheet.match(/<sheetData\b[^>]*>([\s\S]*?)<\/sheetData>/)?.[1];
   if (sheetData === undefined) {
-    throw new Error('Worksheet has no sheetData element.');
+    throw new Error('A planilha não possui o elemento sheetData.');
   }
   const rows = [...sheetData.matchAll(/<row\b[^>]*\br="(\d+)"[^>]*\/>|<row\b[^>]*\br="(\d+)"[^>]*>[\s\S]*?<\/row>/g)];
   const next = rows.find((match) => Number(match[1] ?? match[2]) > rowNumber)?.[0];
@@ -936,7 +936,7 @@ function safeParseRanges(value: string): CellRange[] {
 function parseRange(value: string): CellRange {
   const match = value.match(/^\$?([A-Z]+)\$?(\d+)(?::\$?([A-Z]+)\$?(\d+))?$/i);
   if (!match) {
-    throw new Error(`Invalid A1 range: ${value}`);
+    throw new Error(`Intervalo A1 inválido: ${value}`);
   }
   return {
     startColumn: columnNumber(match[1]),
@@ -968,7 +968,7 @@ function containsCell(range: CellRange, cell: { column: number; row: number }): 
 function requireSheet(sheets: readonly WorksheetIndex[], name: string): WorksheetIndex {
   const sheet = sheets.find((candidate) => candidate.name === name);
   if (!sheet) {
-    throw new Error(`Destination sheet was not found: ${name}`);
+    throw new Error(`Aba de destino não encontrada: ${name}`);
   }
   return sheet;
 }
@@ -983,7 +983,7 @@ function relationshipPartPath(sourcePath: string): string {
 function columnNumber(letters: string): number {
   const normalized = letters.toUpperCase();
   if (!/^[A-Z]{1,3}$/.test(normalized)) {
-    throw new Error(`Invalid column: ${letters}`);
+    throw new Error(`Coluna inválida: ${letters}`);
   }
   return [...normalized].reduce(
     (column, letter) => column * 26 + letter.charCodeAt(0) - 64,

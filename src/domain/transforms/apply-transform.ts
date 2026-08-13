@@ -11,7 +11,7 @@ import type {
 
 function hasColumn(dataset: Dataset, columnId: string): void {
   if (!dataset.columns.some((column) => column.id === columnId)) {
-    throw new RangeError(`Unknown column: ${columnId}`);
+    throw new RangeError(`Coluna desconhecida: ${columnId}`);
   }
 }
 
@@ -25,7 +25,7 @@ function assertNewColumns(dataset: Dataset, columns: readonly ColumnDefinition[]
   const seen = new Set(dataset.columns.map((column) => column.id));
   for (const column of columns) {
     if (seen.has(column.id)) {
-      throw new RangeError(`Duplicate column: ${column.id}`);
+      throw new RangeError(`Coluna duplicada: ${column.id}`);
     }
     seen.add(column.id);
   }
@@ -62,14 +62,14 @@ function conditionOperandValue(operand: TransformConditionOperand, row: DataRow)
 
 function validateConditionNode(dataset: Dataset, node: TransformConditionNode): void {
   if (node.type === 'group') {
-    if (node.children.length === 0) throw new RangeError('Condition groups must contain at least one condition');
+    if (node.children.length === 0) throw new RangeError('Os grupos de condições devem conter pelo menos uma condição.');
     node.children.forEach((child) => validateConditionNode(dataset, child));
     return;
   }
 
   hasColumn(dataset, node.columnId);
   if (node.operator === 'isEmpty' || node.operator === 'notEmpty') return;
-  if (!node.operand) throw new RangeError(`Condition operator ${node.operator} needs an operand`);
+  if (!node.operand) throw new RangeError(`O operador de condição ${node.operator} precisa de um operando.`);
   if (node.operand.type === 'column') hasColumn(dataset, node.operand.columnId);
 }
 
@@ -244,7 +244,7 @@ export function applyTransform(dataset: Dataset, command: TransformCommand): Dat
     case 'reorderColumns': {
       assertKnownColumns(dataset, command.columnIds);
       if (command.columnIds.length !== dataset.columns.length || new Set(command.columnIds).size !== dataset.columns.length) {
-        throw new RangeError('Column order must contain every column exactly once');
+        throw new RangeError('A ordem das colunas deve conter cada coluna exatamente uma vez.');
       }
       const columnsById = new Map(dataset.columns.map((column) => [column.id, column]));
       return copyDataset(dataset, command.columnIds.map((columnId) => columnsById.get(columnId)!));
@@ -283,7 +283,7 @@ export function applyTransform(dataset: Dataset, command: TransformCommand): Dat
       return copyDataset(dataset, dataset.columns.map((column) => column.id === command.columnId ? { ...column, header: command.header } : column));
     case 'splitColumn': {
       hasColumn(dataset, command.columnId);
-      if (command.newColumns.length === 0 || command.delimiter === '') throw new RangeError('Split needs columns and a delimiter');
+      if (command.newColumns.length === 0 || command.delimiter === '') throw new RangeError('A divisão precisa de colunas e de um delimitador.');
       assertNewColumns(dataset, command.newColumns);
       if (command.when) validateConditionNode(dataset, command.when);
       const sourceIndex = dataset.columns.findIndex((column) => column.id === command.columnId);
@@ -375,7 +375,7 @@ export function applyTransform(dataset: Dataset, command: TransformCommand): Dat
         : row.values);
     case 'editCell':
       hasColumn(dataset, command.columnId);
-      if (!dataset.rows.some((row) => row.rowId === command.rowId)) throw new RangeError(`Unknown row: ${command.rowId}`);
+      if (!dataset.rows.some((row) => row.rowId === command.rowId)) throw new RangeError(`Linha desconhecida: ${command.rowId}`);
       return replaceValues(dataset, (row) => row.rowId === command.rowId ? { ...row.values, [command.columnId]: command.value } : row.values);
   }
 }

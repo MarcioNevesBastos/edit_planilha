@@ -72,4 +72,25 @@ describe('ConditionalMatrixEditor', () => {
     }));
     expect(dataset.rows[0].values).toEqual({ context__1: 'A', value__1: 'X' });
   });
+
+  it('exibe os tipos de valor em português', () => {
+    render(<ConditionalMatrixEditor
+      dataset={dataset}
+      columns={dataset.columns}
+      rule={{
+        ...rule,
+        entries: [{
+          conditions: { context__1: { operator: 'any' } },
+          constraints: { value__1: { type: 'type', valueType: 'string' } },
+        }],
+      }}
+      disabled={false}
+      onChange={vi.fn()}
+    />);
+
+    expect(screen.getByRole('option', { name: 'Texto' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Número' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Data' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Booleano' })).toBeInTheDocument();
+  });
 });

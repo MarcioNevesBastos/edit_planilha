@@ -55,6 +55,17 @@ describe('validateRow', () => {
       short__1: 'a',
       long__1: 'abcd',
     });
+    expect(issues.map((issue) => issue.message)).toEqual([
+      'O preenchimento de um valor é obrigatório.',
+      'É esperado um valor do tipo número.',
+      'O valor não está na lista permitida.',
+      'O valor deve ser no mínimo 5.',
+      'O valor deve ser no máximo 10.',
+      'A data deve ser igual ou posterior a 2026-01-01.',
+      'A data deve ser igual ou anterior a 2026-12-31.',
+      'O texto deve conter pelo menos 2 caracteres.',
+      'O texto deve conter no máximo 3 caracteres.',
+    ]);
   });
 });
 
@@ -239,10 +250,10 @@ describe('validateDataset', () => {
     };
 
     expect(validateConditionalMatrixRule(rule, ['context__1', 'value__1'])).toEqual([
-      'Matrix entries 1 and 2 conflict for the same conditions.',
+      'As linhas 1 e 2 da matriz entram em conflito para as mesmas condições.',
     ]);
     expect(validateConditionalMatrixRule({ ...rule, dependentColumnIds: ['missing__1'] }, ['context__1', 'value__1'])).toContain(
-      'Matrix dependent column is not present: missing__1.',
+      'A coluna dependente da matriz não existe: missing__1.',
     );
   });
 

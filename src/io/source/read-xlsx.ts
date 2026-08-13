@@ -19,7 +19,7 @@ export async function readXlsx(
   if (!sheetName || !workbook.Sheets[sheetName]) {
     throw new SourceReadError([{
       code: 'MissingSheet',
-      message: `Source sheet not found: ${sheetName ?? ''}`,
+      message: `Aba de origem não encontrada: ${sheetName ?? ''}`,
     }]);
   }
 
@@ -56,7 +56,7 @@ function assertSafeRange(range: XLSX.Range, maxCells: number): void {
   if (!Number.isSafeInteger(maxCells) || maxCells < 1) {
     throw new SourceReadError([{
       code: 'InvalidCellBound',
-      message: 'maxCells must be a positive whole number',
+      message: 'maxCells deve ser um número inteiro positivo.',
     }]);
   }
 
@@ -67,7 +67,7 @@ function assertSafeRange(range: XLSX.Range, maxCells: number): void {
   if (cellCount > maxCells) {
     throw new SourceReadError([{
       code: 'WorksheetRangeTooLarge',
-      message: `Selected sheet range contains ${cellCount} cells, exceeding the ${maxCells} cell import bound`,
+      message: `O intervalo da aba selecionada contém ${cellCount} células e excede o limite de importação de ${maxCells} células.`,
       details: { cellCount, maxCells },
     }]);
   }
@@ -98,7 +98,7 @@ async function readWorkbook(file: File): Promise<XLSX.WorkBook> {
   } catch (error) {
     throw new SourceReadError([{
       code: 'InvalidWorkbook',
-      message: error instanceof Error ? error.message : 'Unable to read source workbook',
+      message: error instanceof Error ? error.message : 'Não foi possível ler a pasta de trabalho de origem.',
     }]);
   }
 }

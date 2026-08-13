@@ -33,7 +33,7 @@ export function classifyDatasetMemory(
   { sessionThresholdBytes }: MemoryAdvisoryOptions,
 ): DatasetMemoryRisk {
   if (sessionThresholdBytes <= 0) {
-    throw new RangeError('sessionThresholdBytes must be greater than zero');
+    throw new RangeError('sessionThresholdBytes deve ser maior que zero.');
   }
 
   if (estimatedBytes <= sessionThresholdBytes) {

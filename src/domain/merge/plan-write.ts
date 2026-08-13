@@ -77,11 +77,11 @@ function valuesMatch(
 function validateDestination(destination: WritePlanInput['destination']): void {
   for (const [name, value] of Object.entries(destination)) {
     if (!Number.isSafeInteger(value) || value < 1) {
-      throw new RangeError(`${name} must be a positive row number`);
+      throw new RangeError(`${name} deve ser um número de linha positivo.`);
     }
   }
   if (destination.dataStartRow <= destination.headerRow) {
-    throw new RangeError('dataStartRow must be after headerRow');
+    throw new RangeError('dataStartRow deve estar depois de headerRow.');
   }
 }
 
@@ -243,10 +243,10 @@ export function planWrite(input: WritePlanInput): WritePlan {
 
   const keyColumnIds = input.keyColumnIds ?? [];
   if (keyColumnIds.length === 0) {
-    throw new RangeError('Update mode requires at least one key column');
+    throw new RangeError('O modo de atualização exige pelo menos uma coluna-chave.');
   }
   if (new Set(keyColumnIds).size !== keyColumnIds.length) {
-    throw new RangeError('Update key columns must be unique');
+    throw new RangeError('As colunas-chave de atualização devem ser únicas.');
   }
   return planUpdate(input, keyColumnIds);
 }
@@ -259,9 +259,9 @@ export async function planWriteInBatches(
   assertBatchSize(options.batchSize);
   const keyColumnIds = input.keyColumnIds ?? [];
   if (input.mode === 'update') {
-    if (keyColumnIds.length === 0) throw new RangeError('Update mode requires at least one key column');
+    if (keyColumnIds.length === 0) throw new RangeError('O modo de atualização exige pelo menos uma coluna-chave.');
     if (new Set(keyColumnIds).size !== keyColumnIds.length) {
-      throw new RangeError('Update key columns must be unique');
+      throw new RangeError('As colunas-chave de atualização devem ser únicas.');
     }
   }
 
@@ -431,6 +431,6 @@ async function duplicateClassificationsInBatches(
 
 function assertBatchSize(batchSize: number): void {
   if (!Number.isSafeInteger(batchSize) || batchSize < 1) {
-    throw new RangeError('batchSize must be a positive whole number');
+    throw new RangeError('batchSize deve ser um número inteiro positivo.');
   }
 }

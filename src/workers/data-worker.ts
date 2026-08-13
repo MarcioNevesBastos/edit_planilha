@@ -33,7 +33,7 @@ interface WorkerScope extends WorkerMessageTarget {
 
 class OperationCancelled extends Error {
   public constructor() {
-    super('Operation cancelled');
+    super('Operação cancelada.');
   }
 }
 
@@ -317,7 +317,7 @@ async function dispatchRequest(
 function normalizeBatchSize(batchSize: number | undefined): number {
   const value = batchSize ?? DEFAULT_WORKER_BATCH_SIZE;
   if (!Number.isSafeInteger(value) || value < 1) {
-    throw new RangeError('batchSize must be a positive whole number');
+    throw new RangeError('batchSize deve ser um número inteiro positivo.');
   }
   return value;
 }
@@ -339,7 +339,7 @@ async function applyTransformInRowBatches(
     return applyTransform(dataset, command);
   }
   if (command.type === 'editCell' && !dataset.rows.some((row) => row.rowId === command.rowId)) {
-    throw new RangeError(`Unknown row: ${command.rowId}`);
+    throw new RangeError(`Linha desconhecida: ${command.rowId}`);
   }
 
   const rows: DataRow[] = [];
@@ -522,7 +522,7 @@ async function validateUniqueRuleInBatches(
             columnId,
             code: rule.type === 'unique' ? 'unique' : 'composite_unique',
             value: row.values[columnId] ?? null,
-            message: rule.type === 'unique' ? 'Value must be unique.' : 'Combined values must be unique.',
+            message: rule.type === 'unique' ? 'O valor deve ser único.' : 'Os valores combinados devem ser únicos.',
             severity: 'error',
           });
         }
@@ -594,8 +594,8 @@ async function validateConditionalUniqueInBatches(
                 code: constraint.type === 'unique' ? 'conditional_unique' : 'conditional_composite_unique',
                 value: row.values[columnIds[0]] ?? null,
                 message: constraint.type === 'unique'
-                  ? 'Value must be unique within the conditional context.'
-                  : 'Combined values must be unique within the conditional context.',
+                  ? 'O valor deve ser único no contexto condicional.'
+                  : 'Os valores combinados devem ser únicos no contexto condicional.',
                 severity: 'warning',
               });
             }
@@ -622,7 +622,7 @@ function yieldToMessageLoop(): Promise<void> {
 }
 
 function assertNever(value: never): never {
-  throw new Error(`Unhandled worker request: ${JSON.stringify(value)}`);
+  throw new Error(`Solicitação do processador não tratada: ${JSON.stringify(value)}`);
 }
 
 const currentScope = globalThis as Partial<WorkerScope>;

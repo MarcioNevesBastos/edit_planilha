@@ -71,24 +71,24 @@ function entriesOverlap(rule: ConditionalMatrixRule, left: ConditionalMatrixEntr
 export function validateConditionalMatrixRule(rule: ConditionalMatrixRule, columnIds: readonly string[]): string[] {
   const errors: string[] = [];
   const knownColumns = new Set(columnIds);
-  if (rule.keyColumnIds.length === 0) errors.push('Matrix must contain at least one key column.');
-  if (rule.dependentColumnIds.length === 0) errors.push('Matrix must contain at least one dependent column.');
-  if (rule.entries.length === 0) errors.push('Matrix must contain at least one entry.');
-  duplicateValues(rule.keyColumnIds).forEach((columnId) => errors.push(`Matrix key column is duplicated: ${columnId}.`));
-  duplicateValues(rule.dependentColumnIds).forEach((columnId) => errors.push(`Matrix dependent column is duplicated: ${columnId}.`));
+  if (rule.keyColumnIds.length === 0) errors.push('A matriz deve conter pelo menos uma coluna-chave.');
+  if (rule.dependentColumnIds.length === 0) errors.push('A matriz deve conter pelo menos uma coluna dependente.');
+  if (rule.entries.length === 0) errors.push('A matriz deve conter pelo menos uma linha.');
+  duplicateValues(rule.keyColumnIds).forEach((columnId) => errors.push(`A coluna-chave da matriz está duplicada: ${columnId}.`));
+  duplicateValues(rule.dependentColumnIds).forEach((columnId) => errors.push(`A coluna dependente da matriz está duplicada: ${columnId}.`));
   rule.keyColumnIds.forEach((columnId) => {
-    if (!knownColumns.has(columnId)) errors.push(`Matrix key column is not present: ${columnId}.`);
+    if (!knownColumns.has(columnId)) errors.push(`A coluna-chave da matriz não existe: ${columnId}.`);
   });
   rule.dependentColumnIds.forEach((columnId) => {
-    if (!knownColumns.has(columnId)) errors.push(`Matrix dependent column is not present: ${columnId}.`);
-    if (rule.keyColumnIds.includes(columnId)) errors.push(`Matrix column cannot be both key and dependent: ${columnId}.`);
+    if (!knownColumns.has(columnId)) errors.push(`A coluna dependente da matriz não existe: ${columnId}.`);
+    if (rule.keyColumnIds.includes(columnId)) errors.push(`A coluna da matriz não pode ser chave e dependente: ${columnId}.`);
   });
   rule.entries.forEach((entry, entryIndex) => {
     rule.keyColumnIds.forEach((columnId) => {
-      if (!entry.conditions[columnId]) errors.push(`Matrix entry ${entryIndex + 1} is missing condition: ${columnId}.`);
+      if (!entry.conditions[columnId]) errors.push(`A linha ${entryIndex + 1} da matriz não possui condição: ${columnId}.`);
     });
     Object.keys(entry.constraints).forEach((columnId) => {
-      if (!rule.dependentColumnIds.includes(columnId)) errors.push(`Matrix entry ${entryIndex + 1} has an unknown dependent column: ${columnId}.`);
+      if (!rule.dependentColumnIds.includes(columnId)) errors.push(`A linha ${entryIndex + 1} da matriz possui uma coluna dependente desconhecida: ${columnId}.`);
     });
   });
   for (let leftIndex = 0; leftIndex < rule.entries.length; leftIndex += 1) {
@@ -101,7 +101,7 @@ export function validateConditionalMatrixRule(rule: ConditionalMatrixRule, colum
         const leftConstraint = left.constraints[columnId];
         const rightConstraint = right.constraints[columnId];
         if (leftConstraint && rightConstraint && constraintsConflict(leftConstraint, rightConstraint)) {
-          errors.push(`Matrix entries ${leftIndex + 1} and ${rightIndex + 1} conflict for the same conditions.`);
+          errors.push(`As linhas ${leftIndex + 1} e ${rightIndex + 1} da matriz entram em conflito para as mesmas condições.`);
           break;
         }
       }

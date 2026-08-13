@@ -36,6 +36,10 @@ function matchesType(value: CellValue, valueType: ValidationValueType): boolean 
   }
 }
 
+function valueTypeLabel(valueType: ValidationValueType): string {
+  return ({ string: 'texto', number: 'número', date: 'data', boolean: 'booleano' })[valueType];
+}
+
 function issue(
   row: DataRow,
   columnId: string,
@@ -61,20 +65,20 @@ function validateLocalRule(
 ): ValidationIssue[] {
   const value = row.values[rule.columnId] ?? null;
   if (rule.type === 'required') {
-    return isEmpty(value) ? [issue(row, rule.columnId, `${codePrefix}required`, value, 'A value is required.', severity)] : [];
+    return isEmpty(value) ? [issue(row, rule.columnId, `${codePrefix}required`, value, 'O preenchimento de um valor é obrigatório.', severity)] : [];
   }
   if (isEmpty(value)) return [];
 
   switch (rule.type) {
     case 'type':
-      return matchesType(value, rule.valueType) ? [] : [issue(row, rule.columnId, `${codePrefix}type`, value, `Expected a ${rule.valueType} value.`, severity)];
+      return matchesType(value, rule.valueType) ? [] : [issue(row, rule.columnId, `${codePrefix}type`, value, `É esperado um valor do tipo ${valueTypeLabel(rule.valueType)}.`, severity)];
     case 'allowed':
-      return rule.allowedValues.includes(value) ? [] : [issue(row, rule.columnId, `${codePrefix}allowed`, value, 'Value is not in the allowed list.', severity)];
+      return rule.allowedValues.includes(value) ? [] : [issue(row, rule.columnId, `${codePrefix}allowed`, value, 'O valor não está na lista permitida.', severity)];
     case 'numberRange': {
       if (typeof value !== 'number' || !Number.isFinite(value)) return [];
       const issues: ValidationIssue[] = [];
-      if (rule.min !== undefined && value < rule.min) issues.push(issue(row, rule.columnId, `${codePrefix}min`, value, `Value must be at least ${rule.min}.`, severity));
-      if (rule.max !== undefined && value > rule.max) issues.push(issue(row, rule.columnId, `${codePrefix}max`, value, `Value must be at most ${rule.max}.`, severity));
+      if (rule.min !== undefined && value < rule.min) issues.push(issue(row, rule.columnId, `${codePrefix}min`, value, `O valor deve ser no mínimo ${rule.min}.`, severity));
+      if (rule.max !== undefined && value > rule.max) issues.push(issue(row, rule.columnId, `${codePrefix}max`, value, `O valor deve ser no máximo ${rule.max}.`, severity));
       return issues;
     }
     case 'dateRange': {
@@ -83,15 +87,15 @@ function validateLocalRule(
       const issues: ValidationIssue[] = [];
       const min = rule.min === undefined ? null : parseDate(rule.min);
       const max = rule.max === undefined ? null : parseDate(rule.max);
-      if (min !== null && timestamp < min) issues.push(issue(row, rule.columnId, `${codePrefix}date_min`, value, `Date must be on or after ${rule.min}.`, severity));
-      if (max !== null && timestamp > max) issues.push(issue(row, rule.columnId, `${codePrefix}date_max`, value, `Date must be on or before ${rule.max}.`, severity));
+      if (min !== null && timestamp < min) issues.push(issue(row, rule.columnId, `${codePrefix}date_min`, value, `A data deve ser igual ou posterior a ${rule.min}.`, severity));
+      if (max !== null && timestamp > max) issues.push(issue(row, rule.columnId, `${codePrefix}date_max`, value, `A data deve ser igual ou anterior a ${rule.max}.`, severity));
       return issues;
     }
     case 'stringLength': {
       if (typeof value !== 'string') return [];
       const issues: ValidationIssue[] = [];
-      if (rule.min !== undefined && value.length < rule.min) issues.push(issue(row, rule.columnId, `${codePrefix}min_length`, value, `Text must contain at least ${rule.min} characters.`, severity));
-      if (rule.max !== undefined && value.length > rule.max) issues.push(issue(row, rule.columnId, `${codePrefix}max_length`, value, `Text must contain at most ${rule.max} characters.`, severity));
+      if (rule.min !== undefined && value.length < rule.min) issues.push(issue(row, rule.columnId, `${codePrefix}min_length`, value, `O texto deve conter pelo menos ${rule.min} caracteres.`, severity));
+      if (rule.max !== undefined && value.length > rule.max) issues.push(issue(row, rule.columnId, `${codePrefix}max_length`, value, `O texto deve conter no máximo ${rule.max} caracteres.`, severity));
       return issues;
     }
   }
@@ -144,16 +148,16 @@ function validateConditionalConstraint(
     case 'compositeUnique':
       return [];
     case 'required':
-      return isEmpty(value) ? [conditionalIssue(row, columnId, 'required', value, 'A value is required by the matching conditional rule.')] : [];
+      return isEmpty(value) ? [conditionalIssue(row, columnId, 'required', value, 'O preenchimento de um valor é obrigatório pela regra condicional correspondente.')] : [];
     case 'empty':
-      return isEmpty(value) ? [] : [conditionalIssue(row, columnId, 'empty', value, 'Value must be empty for the matching conditional rule.')];
+      return isEmpty(value) ? [] : [conditionalIssue(row, columnId, 'empty', value, 'O valor deve estar vazio para a regra condicional correspondente.')];
     case 'equals':
-      return sameValue(value, constraint.value) ? [] : [conditionalIssue(row, columnId, 'equals', value, 'Value does not match the matching conditional rule.')];
+      return sameValue(value, constraint.value) ? [] : [conditionalIssue(row, columnId, 'equals', value, 'O valor não corresponde à regra condicional correspondente.')];
     default: {
       const issues = validateLocalRule(row, { ...constraint, columnId } as LocalValidationRule, 'warning', 'conditional_');
       return issues.map((current) => ({
         ...current,
-        message: `Conditional rule: ${current.message}`,
+        message: `Regra condicional: ${current.message}`,
       }));
     }
   }
@@ -163,7 +167,7 @@ function validateConditionalMatrixRow(row: DataRow, rule: ConditionalMatrixRule)
   const matchingEntries = rule.entries.filter((entry) => matchesConditionalMatrixEntry(row, rule, entry));
   if (matchingEntries.length === 0) {
     const columnId = rule.keyColumnIds[0] ?? rule.dependentColumnIds[0] ?? '';
-    return [conditionalIssue(row, columnId, 'no_match', row.values[columnId] ?? null, 'No conditional matrix row matches this record.')];
+    return [conditionalIssue(row, columnId, 'no_match', row.values[columnId] ?? null, 'Nenhuma linha da matriz condicional corresponde a este registro.')];
   }
   return matchingEntries.flatMap((entry) => rule.dependentColumnIds.flatMap((columnId) => {
     const constraint = entry.constraints[columnId];
@@ -180,7 +184,7 @@ function validateUniqueRule(dataset: Dataset, rule: Extract<ValidationRule, { ty
     groups.set(key, [...(groups.get(key) ?? []), row]);
   }
   return [...groups.values()].flatMap((rows) => rows.length > 1
-    ? rows.map((row) => issue(row, rule.columnId, 'unique', row.values[rule.columnId] ?? null, 'Value must be unique.'))
+    ? rows.map((row) => issue(row, rule.columnId, 'unique', row.values[rule.columnId] ?? null, 'O valor deve ser único.'))
     : []);
 }
 
@@ -208,7 +212,7 @@ function validateConditionalUniqueRule(
       columnId,
       compositeColumnIds ? 'conditional_composite_unique' : 'conditional_unique',
       row.values[columnId] ?? null,
-      compositeColumnIds ? 'Combined values must be unique within the conditional context.' : 'Value must be unique within the conditional context.',
+      compositeColumnIds ? 'Os valores combinados devem ser únicos no contexto condicional.' : 'O valor deve ser único no contexto condicional.',
       'warning',
     ))
     : []);
@@ -224,7 +228,7 @@ function validateCompositeUniqueRule(dataset: Dataset, rule: Extract<ValidationR
     groups.set(key, [...(groups.get(key) ?? []), row]);
   }
   return [...groups.values()].flatMap((rows) => rows.length > 1
-    ? rows.map((row) => issue(row, rule.columnIds[0], 'composite_unique', row.values[rule.columnIds[0]] ?? null, 'Combined values must be unique.'))
+    ? rows.map((row) => issue(row, rule.columnIds[0], 'composite_unique', row.values[rule.columnIds[0]] ?? null, 'Os valores combinados devem ser únicos.'))
     : []);
 }
 

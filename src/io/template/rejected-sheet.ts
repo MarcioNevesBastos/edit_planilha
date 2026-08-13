@@ -44,7 +44,7 @@ export async function addRejectedSheet(
   const worksheetPath = `${workbookDirectory}/${worksheetTarget}`;
   const relationshipsPath = relationshipPartPath(index.workbookPath);
   if (options && (!Number.isSafeInteger(options.batchSize) || options.batchSize < 1)) {
-    throw new RangeError('batchSize must be a positive whole number');
+    throw new RangeError('batchSize deve ser um número inteiro positivo.');
   }
   const worksheet = await rejectedWorksheet(rows, options);
   const workbook = appendBeforeClosingTag(
@@ -74,12 +74,12 @@ export async function addRejectedSheet(
 async function rejectedWorksheet(rows: readonly RejectedSheetRow[], options?: RejectedSheetOptions): Promise<string> {
   const originalFields = uniqueOriginalFields(rows);
   const headers = [
-    'source row number',
+    'número da linha de origem',
     ...originalFields,
-    'error field',
-    'invalid value',
-    'rejection reason',
-    'failed rule/transform',
+    'campo com erro',
+    'valor inválido',
+    'motivo da rejeição',
+    'regra/transformação com falha',
   ];
   const allRows: readonly (readonly CellValue[])[] = [headers];
   const lastCell = `${columnName(headers.length)}${rows.length + 1}`;
@@ -126,12 +126,12 @@ async function rejectedRowsInBatches(
     await options.onProgress({ completed: end, total: rows.length });
   }
   return worksheetRow(1, [
-    'source row number',
+    'número da linha de origem',
     ...originalFields,
-    'error field',
-    'invalid value',
-    'rejection reason',
-    'failed rule/transform',
+    'campo com erro',
+    'valor inválido',
+    'motivo da rejeição',
+    'regra/transformação com falha',
   ]) + chunks.join('');
 }
 
@@ -187,7 +187,7 @@ function appendBeforeClosingTag(xml: string, tagName: string, content: string): 
   const closingTag = `</${tagName}>`;
   const position = xml.lastIndexOf(closingTag);
   if (position < 0) {
-    throw new Error(`Invalid OOXML: missing ${closingTag}`);
+    throw new Error(`OOXML inválido: falta ${closingTag}`);
   }
   return `${xml.slice(0, position)}${content}${xml.slice(position)}`;
 }

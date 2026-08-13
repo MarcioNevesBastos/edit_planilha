@@ -41,6 +41,10 @@ function defaultEntry(rule: ConditionalMatrixRule): ConditionalMatrixEntry {
   };
 }
 
+function valueTypeLabel(valueType: ValidationValueType): string {
+  return ({ string: 'Texto', number: 'Número', date: 'Data', boolean: 'Booleano' })[valueType];
+}
+
 function constraintLabel(constraint: ConditionalConstraint): string {
   switch (constraint.type) {
     case 'any': return 'Sem regra';
@@ -48,7 +52,7 @@ function constraintLabel(constraint: ConditionalConstraint): string {
     case 'empty': return 'Vazio';
     case 'equals': return 'Valor exato';
     case 'allowed': return 'Lista permitida';
-    case 'type': return `Tipo: ${constraint.valueType}`;
+    case 'type': return `Tipo: ${valueTypeLabel(constraint.valueType)}`;
     case 'numberRange': return 'Intervalo numérico';
     case 'dateRange': return 'Intervalo de datas';
     case 'stringLength': return 'Tamanho do texto';
@@ -265,7 +269,7 @@ function ConstraintEditor({ column, constraint, disabled, onChange }: Constraint
   if (constraint.type === 'type') {
     return (
       <select aria-label="Tipo esperado" value={constraint.valueType} disabled={disabled} onChange={(event) => onChange({ type: 'type', valueType: event.currentTarget.value as ValidationValueType })}>
-        {(['string', 'number', 'date', 'boolean'] as const).map((valueType) => <option value={valueType} key={valueType}>{valueType}</option>)}
+        {(['string', 'number', 'date', 'boolean'] as const).map((valueType) => <option value={valueType} key={valueType}>{valueTypeLabel(valueType)}</option>)}
       </select>
     );
   }

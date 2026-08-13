@@ -160,7 +160,7 @@ describe('expandDestination', () => {
       dataStartRow: 2,
       templateRow: 4,
       requiredDataRows: 5,
-    })).rejects.toThrow('Unsupported row-bearing worksheet geometry');
+    })).rejects.toThrow('Geometria de planilha com linhas não suportada');
 
     expect(pkg.readPart('xl/worksheets/sheet2.xml')).toEqual(originalWorksheet);
   });
@@ -172,7 +172,7 @@ describe('expandDestination', () => {
       dataStartRow: 2,
       templateRow: 1,
       requiredDataRows: 5,
-    })).rejects.toThrow('Template row 1 is outside destination data rows 2:4');
+    })).rejects.toThrow('A linha de modelo 1 está fora das linhas de dados de destino 2:4');
   });
 
   it('does not mutate the worksheet when its table range is not the confirmed destination', async () => {
@@ -186,7 +186,7 @@ describe('expandDestination', () => {
       templateRow: 5,
       requiredDataRows: 5,
       tablePath: 'xl/tables/table1.xml',
-    })).rejects.toThrow('Table range A2:D5 does not match destination A2:E5');
+    })).rejects.toThrow('O intervalo da tabela A2:D5 não corresponde ao destino A2:E5');
 
     expect(pkg.readPart('xl/worksheets/sheet1.xml')).toEqual(originalWorksheet);
     expect(pkg.readPart('xl/tables/table1.xml')).toEqual(originalTable);
@@ -225,13 +225,13 @@ describe('addRejectedSheet', () => {
     const worksheet = textPart('xl/worksheets/sheet3.xml');
     expect(worksheet).toContain('<dimension ref="A1:G2"/>');
     for (const header of [
-      'source row number',
+      'número da linha de origem',
       'Cliente',
       'Idade',
-      'error field',
-      'invalid value',
-      'rejection reason',
-      'failed rule/transform',
+      'campo com erro',
+      'valor inválido',
+      'motivo da rejeição',
+      'regra/transformação com falha',
     ]) {
       expect(worksheet).toContain(`<t>${header}</t>`);
     }
@@ -268,7 +268,7 @@ describe('addRejectedSheet', () => {
     const originalRelationships = pkg.readPart('xl/_rels/workbook.xml.rels');
 
     await expect(addRejectedSheet(pkg, [])).rejects.toThrow(
-      'Invalid OOXML: missing </Types>',
+      'OOXML inválido: falta </Types>',
     );
 
     expect(pkg.listParts()).toEqual(originalParts);

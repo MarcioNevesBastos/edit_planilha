@@ -37,6 +37,6 @@ function extensionOf(name: string): string {
 function unsupportedFileError(file: File): SourceReadError {
   return new SourceReadError([{
     code: 'UnsupportedFileType',
-    message: `Unsupported source file type: ${file.name}`,
+    message: `Tipo de arquivo de origem não suportado: ${file.name}`,
   }]);
 }

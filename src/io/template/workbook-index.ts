@@ -74,7 +74,7 @@ export async function indexWorkbook(pkg: OoxmlPackage): Promise<WorkbookIndex> {
   );
 
   if (!officeDocument?.targetPath) {
-    throw new Error('OOXML package has no workbook relationship');
+    throw new Error('O pacote OOXML não possui relacionamento com a pasta de trabalho.');
   }
 
   const workbookPath = officeDocument.targetPath;
@@ -92,7 +92,7 @@ export async function indexWorkbook(pkg: OoxmlPackage): Promise<WorkbookIndex> {
     const relationship = relationships.find(({ id }) => id === relationshipId);
 
     if (!relationship?.targetPath) {
-      throw new Error(`Worksheet relationship not found: ${relationshipId}`);
+      throw new Error(`Relacionamento da planilha não encontrado: ${relationshipId}`);
     }
 
     return {
@@ -134,7 +134,7 @@ function indexWorksheet(
     const relationship = worksheetRelationships.find(({ id }) => id === relationshipId);
 
     if (!relationship?.targetPath) {
-      throw new Error(`Table relationship not found: ${relationshipId}`);
+      throw new Error(`Relacionamento da tabela não encontrado: ${relationshipId}`);
     }
 
     const table = record(parseXml(pkg, relationship.targetPath).table, 'table');
@@ -313,7 +313,7 @@ function parseRangeFormula(formula: string): { sheetName: string; range: string 
 function columnNumber(reference: string): number {
   const match = reference.match(/^([A-Z]+)\d+$/i);
   if (!match) {
-    throw new Error(`Invalid cell reference: ${reference}`);
+    throw new Error(`Referência de célula inválida: ${reference}`);
   }
   return [...match[1].toUpperCase()].reduce(
     (column, letter) => column * 26 + letter.charCodeAt(0) - 64,
@@ -341,14 +341,14 @@ function asArray(value: unknown): unknown[] {
 
 function record(value: unknown, label: string): XmlRecord {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`Invalid OOXML ${label}`);
+    throw new Error(`OOXML inválido: ${label}`);
   }
   return value as XmlRecord;
 }
 
 function text(value: unknown, label: string): string {
   if (typeof value !== 'string' && typeof value !== 'number') {
-    throw new Error(`Invalid OOXML ${label}`);
+    throw new Error(`OOXML inválido: ${label}`);
   }
   return String(value);
 }
@@ -360,7 +360,7 @@ function optionalText(value: unknown): string | null {
 function integer(value: unknown, label: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed)) {
-    throw new Error(`Invalid OOXML ${label}`);
+    throw new Error(`OOXML inválido: ${label}`);
   }
   return parsed;
 }

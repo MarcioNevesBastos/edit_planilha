@@ -99,5 +99,5 @@ export function isWorkerControlMessage(message: unknown): message is WorkerContr
 }
 
 function assertNever(value: never): never {
-  throw new Error(`Unhandled worker protocol message: ${JSON.stringify(value)}`);
+  throw new Error(`Mensagem de protocolo do processador não tratada: ${JSON.stringify(value)}`);
 }

@@ -6,7 +6,7 @@ function valueKey(value: CellValue): string {
 
 export function getDistinctColumnValues(dataset: Dataset, columnId: string, limit = 500): CellValue[] {
   if (!dataset.columns.some((column) => column.id === columnId)) {
-    throw new RangeError(`Unknown column: ${columnId}`);
+    throw new RangeError(`Coluna desconhecida: ${columnId}`);
   }
 
   const values: CellValue[] = [];
@@ -53,7 +53,7 @@ export function displayCellValue(value: CellValue): string {
 
 function columnTextValues(dataset: Dataset, columnId: string): string[] {
   if (!dataset.columns.some((column) => column.id === columnId)) {
-    throw new RangeError(`Unknown column: ${columnId}`);
+    throw new RangeError(`Coluna desconhecida: ${columnId}`);
   }
   return dataset.rows
     .map((row) => row.values[columnId])

@@ -19,7 +19,7 @@ export async function openOoxmlPackage(buffer: ArrayBuffer): Promise<OoxmlPackag
     unzipped = unzipSync(new Uint8Array(buffer));
   } catch (error) {
     throw new Error(
-      `Invalid OOXML package: ${error instanceof Error ? error.message : String(error)}`,
+      `Pacote OOXML inválido: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
@@ -37,7 +37,7 @@ export async function openOoxmlPackage(buffer: ArrayBuffer): Promise<OoxmlPackag
     },
     addPart: (path, content) => {
       if (parts.has(path)) {
-        throw new Error(`OOXML part already exists: ${path}`);
+        throw new Error(`A parte OOXML já existe: ${path}`);
       }
       parts.set(path, partBytes(content));
     },
@@ -55,7 +55,7 @@ export async function openOoxmlPackage(buffer: ArrayBuffer): Promise<OoxmlPackag
 function requirePart(parts: Map<string, Uint8Array>, path: string): Uint8Array {
   const content = parts.get(path);
   if (!content) {
-    throw new Error(`OOXML part not found: ${path}`);
+    throw new Error(`Parte OOXML não encontrada: ${path}`);
   }
   return content;
 }

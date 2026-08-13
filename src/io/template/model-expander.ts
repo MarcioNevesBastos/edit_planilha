@@ -45,7 +45,7 @@ export async function expandDestination(
   const worksheet = decode(pkg.readPart(plan.worksheetPath));
   assertSupportedRowGeometry(worksheet, plan.worksheetPath);
   if (options && (!Number.isSafeInteger(options.batchSize) || options.batchSize < 1)) {
-    throw new RangeError('batchSize must be a positive whole number');
+    throw new RangeError('batchSize deve ser um número inteiro positivo.');
   }
   const expandedWorksheet = await expandWorksheet(
     worksheet,
@@ -87,17 +87,17 @@ function validatePlan(plan: DestinationExpansionPlan, destination: CellRange): v
     ['requiredDataRows', plan.requiredDataRows],
   ] as const) {
     if (!Number.isInteger(value) || value < 1) {
-      throw new Error(`${label} must be a positive integer`);
+      throw new Error(`${label} deve ser um número inteiro positivo.`);
     }
   }
   if (plan.dataStartRow < destination.startRow || plan.dataStartRow > destination.endRow) {
     throw new Error(
-      `Data start row ${plan.dataStartRow} is outside destination ${plan.destinationRange}`,
+      `A linha inicial de dados ${plan.dataStartRow} está fora do destino ${plan.destinationRange}.`,
     );
   }
   if (plan.templateRow < plan.dataStartRow || plan.templateRow > destination.endRow) {
     throw new Error(
-      `Template row ${plan.templateRow} is outside destination data rows ${plan.dataStartRow}:${destination.endRow}`,
+      `A linha de modelo ${plan.templateRow} está fora das linhas de dados de destino ${plan.dataStartRow}:${destination.endRow}.`,
     );
   }
 }
@@ -112,14 +112,14 @@ async function expandWorksheet(
 ): Promise<string> {
   const sheetDataMatch = worksheet.match(/<sheetData\b[^>]*>([\s\S]*?)<\/sheetData>/);
   if (!sheetDataMatch) {
-    throw new Error('Worksheet has no sheetData element');
+    throw new Error('A planilha não possui o elemento sheetData.');
   }
 
   const rowPattern = /<row\b[^>]*\br="(\d+)"[^>]*(?:\/>|>[\s\S]*?<\/row>)/g;
   const rows = [...sheetDataMatch[1].matchAll(rowPattern)];
   const template = rows.find((match) => Number(match[1]) === templateRowNumber)?.[0];
   if (!template) {
-    throw new Error(`Template row ${templateRowNumber} was not found in worksheet`);
+    throw new Error(`A linha de modelo ${templateRowNumber} não foi encontrada na planilha.`);
   }
 
   const clones = options
@@ -224,7 +224,7 @@ function expandTable(
   const actualRange = tableTag ? attribute(tableTag, 'ref') : null;
   if (!actualRange || normalizeRange(actualRange) !== normalizeRange(expectedRange)) {
     throw new Error(
-      `Table range ${actualRange ?? '(missing)'} does not match destination ${expectedRange}`,
+      `O intervalo da tabela ${actualRange ?? '(ausente)'} não corresponde ao destino ${expectedRange}.`,
     );
   }
 
@@ -235,7 +235,7 @@ function expandTable(
     return setAttribute(tag, 'ref', expandedRange);
   });
   if (!updatedRoot) {
-    throw new Error('Invalid table XML');
+    throw new Error('XML de tabela inválido.');
   }
   result = updateReferenceAttributes(result, 'autoFilter', () => expandedRange);
   return result;
@@ -404,7 +404,7 @@ function updateReferenceAttributes(
 function parseRange(value: string): CellRange {
   const match = value.match(/^\$?([A-Z]+)\$?(\d+)(?::\$?([A-Z]+)\$?(\d+))?$/i);
   if (!match) {
-    throw new Error(`Invalid A1 range: ${value}`);
+    throw new Error(`Intervalo A1 inválido: ${value}`);
   }
   return {
     startColumn: match[1].toUpperCase(),
@@ -441,7 +441,7 @@ function setAttribute(tag: string, name: string, value: string): string {
 
 function assertSupportedRowGeometry(worksheet: string, worksheetPath: string): void {
   if (/<(?:extLst|legacyDrawing|legacyDrawingHF|oleObjects|controls|picture)\b/i.test(worksheet)) {
-    throw new Error(`Unsupported row-bearing worksheet geometry in ${worksheetPath}`);
+    throw new Error(`Geometria de planilha com linhas não suportada em ${worksheetPath}.`);
   }
 }
 
@@ -458,7 +458,7 @@ function expandDrawingAnchors(
 
   const relationshipsPath = relationshipPartPath(worksheetPath);
   if (!pkg.hasPart(relationshipsPath)) {
-    throw new Error(`Drawing relationships were not found for ${worksheetPath}`);
+    throw new Error(`Relacionamentos de desenho não encontrados para ${worksheetPath}.`);
   }
   const relationships = decode(pkg.readPart(relationshipsPath));
   const updates = new Map<string, string>();
@@ -467,14 +467,14 @@ function expandDrawingAnchors(
       .map((match) => match[0])
       .find((tag) => attribute(tag, 'Id') === relationshipId);
     if (!relationship || !attribute(relationship, 'Type')?.endsWith('/drawing')) {
-      throw new Error(`Drawing relationship was not found: ${relationshipId}`);
+      throw new Error(`Relacionamento de desenho não encontrado: ${relationshipId}`);
     }
     const target = attribute(relationship, 'Target');
-    if (!target) throw new Error(`Drawing target was not found: ${relationshipId}`);
+    if (!target) throw new Error(`Destino de desenho não encontrado: ${relationshipId}`);
     const drawingPath = resolveTarget(worksheetPath, target);
     const drawing = decode(pkg.readPart(drawingPath));
     if (/<xdr:extLst\b/i.test(drawing)) {
-      throw new Error(`Unsupported row-bearing drawing geometry in ${drawingPath}`);
+      throw new Error(`Geometria de desenho com linhas não suportada em ${drawingPath}.`);
     }
     updates.set(drawingPath, drawing.replace(
       /(<xdr:row>)(\d+)(<\/xdr:row>)/g,

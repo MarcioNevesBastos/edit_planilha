@@ -52,6 +52,7 @@ describe('XLSX source reader', () => {
       name: 'SourceReadError',
       issues: [expect.objectContaining({
         code: 'WorksheetRangeTooLarge',
+        message: 'O intervalo da aba selecionada contém 9 células e excede o limite de importação de 8 células.',
       })],
     });
   });
