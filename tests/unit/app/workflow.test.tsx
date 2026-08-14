@@ -375,6 +375,35 @@ describe('workflow navigation', () => {
     }
   });
 
+  it('shows detailed transform parameters in the applied sequence table', async () => {
+    const user = userEvent.setup();
+    const worker = new FakeWorker();
+    render(<App workerFactory={() => worker} />);
+
+    await importSource(user);
+    await chooseTemplate(user);
+    await chooseDestination(user);
+    await user.click(screen.getByRole('button', { name: 'Aceitar ID' }));
+    await user.click(screen.getByRole('button', { name: 'Ignorar Nome' }));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+
+    await user.selectOptions(screen.getByLabelText('Tipo de transformação'), 'findReplace');
+    await user.selectOptions(screen.getByLabelText('Coluna principal'), 'nome__1');
+    await user.selectOptions(screen.getByLabelText('Sugestões para Localizar'), 'string:Ana');
+    await user.selectOptions(screen.getByLabelText('Sugestões para Substituir por'), 'string:Bruno');
+    await user.click(screen.getByLabelText('Aplicar condicionantes'));
+    await user.click(screen.getByRole('button', { name: 'Adicionar transformação' }));
+
+    const sequence = screen.getByRole('table', { name: 'Sequência aplicada' });
+    expect(within(sequence).getByRole('columnheader', { name: 'Coluna-alvo' })).toBeInTheDocument();
+    expect(within(sequence).getByText('Nome')).toBeInTheDocument();
+    expect(within(sequence).getByText('Localizar')).toBeInTheDocument();
+    expect(within(sequence).getByText('Ana')).toBeInTheDocument();
+    expect(within(sequence).getByText('Substituir por')).toBeInTheDocument();
+    expect(within(sequence).getByText('Bruno')).toBeInTheDocument();
+    expect(within(sequence).getByText(/Condição:/)).toBeInTheDocument();
+  });
+
   it('blocks duplicate destinations even after both mappings are accepted', async () => {
     const user = userEvent.setup();
     const worker = new FakeWorker();

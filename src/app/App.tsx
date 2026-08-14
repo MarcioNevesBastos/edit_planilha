@@ -12,7 +12,7 @@ import type { CellValue, Dataset, DatasetColumn } from '../domain/dataset/types'
 import { makeColumnId } from '../domain/dataset/column-id';
 import { suggestMappings } from '../domain/mapping/suggest-mappings';
 import type { WriteMode, WritePlan } from '../domain/merge/types';
-import type { FilterOperator, TransformCommand, TransformConditionNode } from '../domain/transforms/types';
+import type { Expression, FilterOperator, TransformCommand, TransformConditionNode, TransformConditionOperator } from '../domain/transforms/types';
 import { detectDateFormats, detectDecimalSeparator, getSuggestedDelimiters } from '../domain/transforms/transform-values';
 import { validateDataset } from '../domain/validation/validate-row';
 import { validateConditionalMatrixRule } from '../domain/validation/matrix';
@@ -1451,31 +1451,125 @@ function TransformationEditor({
           <button type="button" disabled={busy || !canRedo} onClick={onRedo}>Refazer</button>
         </div>
         {commands.length === 0 ? <p>Nenhuma transformação adicionada.</p> : (
-          <ol>
-            {commands.map((command, index) => (
-              <li key={`${command.type}-${index}`}>
-                <span>{index + 1}</span>
-                <strong>{TRANSFORM_LABELS[command.type]}</strong>
-                <div>
-                  <button type="button" aria-label={`Mover ${index + 1} para cima`} disabled={busy || index === 0} onClick={() => {
-                    const next = [...commands];
-                    [next[index - 1], next[index]] = [next[index], next[index - 1]];
-                    onReplace(next);
-                  }}>↑</button>
-                  <button type="button" aria-label={`Mover ${index + 1} para baixo`} disabled={busy || index === commands.length - 1} onClick={() => {
-                    const next = [...commands];
-                    [next[index], next[index + 1]] = [next[index + 1], next[index]];
-                    onReplace(next);
-                  }}>↓</button>
-                  <button type="button" disabled={busy} onClick={() => onReplace(commands.filter((_, current) => current !== index))}>Remover</button>
-                </div>
-              </li>
-            ))}
-          </ol>
+          <div className="command-table-scroll">
+            <table className="command-table" aria-label="Sequência aplicada">
+              <caption className="visually-hidden">Parâmetros das transformações aplicadas</caption>
+              <thead><tr>
+                <th scope="col">#</th>
+                <th scope="col">Transformação</th>
+                <th scope="col">Coluna-alvo</th>
+                <th scope="col">Valores/configurações</th>
+                <th scope="col">Condições</th>
+                <th scope="col">Ações</th>
+              </tr></thead>
+              <tbody>
+                {commands.map((command, index) => {
+                  const details = transformDetails(command, dataset.columns);
+                  return (
+                    <tr key={`${command.type}-${index}`}>
+                      <td><span className="command-index">{index + 1}</span></td>
+                      <th scope="row">{TRANSFORM_LABELS[command.type]}</th>
+                      <td className="command-target">{details.target}</td>
+                      <td><dl className="command-details">{details.parameters.map(([label, detail]) => <div key={label}><dt>{label}</dt><dd>{detail}</dd></div>)}</dl></td>
+                      <td className="command-condition">{details.condition ?? '—'}</td>
+                      <td><div className="command-actions">
+                        <button type="button" aria-label={`Mover ${index + 1} para cima`} disabled={busy || index === 0} onClick={() => {
+                          const next = [...commands];
+                          [next[index - 1], next[index]] = [next[index], next[index - 1]];
+                          onReplace(next);
+                        }}>↑</button>
+                        <button type="button" aria-label={`Mover ${index + 1} para baixo`} disabled={busy || index === commands.length - 1} onClick={() => {
+                          const next = [...commands];
+                          [next[index], next[index + 1]] = [next[index + 1], next[index]];
+                          onReplace(next);
+                        }}>↓</button>
+                        <button type="button" disabled={busy} onClick={() => onReplace(commands.filter((_, current) => current !== index))}>Remover</button>
+                      </div></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
     </div>
   );
+}
+
+type TransformDetails = {
+  target: React.ReactNode;
+  parameters: Array<[string, React.ReactNode]>;
+  condition?: React.ReactNode;
+};
+
+function displayCellValue(value: CellValue | undefined): string {
+  if (value === null || value === undefined || value === '') return 'Vazio';
+  if (typeof value === 'string') return value;
+  return String(value);
+}
+
+function columnHeader(columnId: string | undefined, columns: readonly DatasetColumn[]): string {
+  return columns.find((column) => column.id === columnId)?.header ?? columnId ?? '—';
+}
+
+function conditionLabel(condition: TransformConditionNode | undefined, columns: readonly DatasetColumn[]): string | undefined {
+  if (!condition) return undefined;
+  if (condition.type === 'group') {
+    return condition.children.map((child) => conditionLabel(child, columns) ?? '—').join(condition.operator === 'and' ? ' E ' : ' OU ');
+  }
+  const operators: Record<TransformConditionOperator, string> = {
+    equals: 'Igual a', notEquals: 'Diferente de', contains: 'Contém', isEmpty: 'Está vazio', notEmpty: 'Não está vazio',
+    greaterThan: 'Maior que', greaterThanOrEqual: 'Maior ou igual a', lessThan: 'Menor que', lessThanOrEqual: 'Menor ou igual a',
+  };
+  const operand = condition.operand?.type === 'column'
+    ? columnHeader(condition.operand.columnId, columns)
+    : displayCellValue(condition.operand?.value);
+  return `${columnHeader(condition.columnId, columns)} ${operators[condition.operator]}${condition.operand ? ` ${operand}` : ''}`;
+}
+
+function transformDetails(command: TransformCommand, columns: readonly DatasetColumn[]): TransformDetails {
+  const target = (() => {
+    if (command.type === 'reorderColumns') return command.columnIds.map((id) => columnHeader(id, columns)).join(' → ');
+    if (command.type === 'combineColumns' || command.type === 'findReplace') return command.columnIds.map((id) => columnHeader(id, columns)).join(', ');
+    if (command.type === 'conditionalRule') return command.updates.map(({ columnId }) => columnHeader(columnId, columns)).join(', ');
+    if (command.type === 'calculatedColumn') return command.newColumn.header;
+    if (command.type === 'editCell') return columnHeader(command.columnId, columns);
+    if (command.type === 'sort') return command.sorts.map(({ columnId }) => columnHeader(columnId, columns)).join(', ');
+    if (command.type === 'removeEmptyRows') return (command.columnIds ?? []).map((id) => columnHeader(id, columns)).join(', ') || 'Todas';
+    if (command.type === 'deduplicate') return command.columnIds.map((id) => columnHeader(id, columns)).join(', ');
+    return columnHeader(command.columnId, columns);
+  })();
+  const parameters: Array<[string, React.ReactNode]> = [];
+  switch (command.type) {
+    case 'reorderColumns': parameters.push(['Ordem', target]); break;
+    case 'sort': parameters.push(['Direção', command.sorts.map((sort) => sort.direction === 'asc' ? 'Crescente' : 'Decrescente').join(', ')]); break;
+    case 'filter': parameters.push(['Operador', command.operator], ['Valor', displayCellValue(command.value)]); break;
+    case 'removeEmptyRows': parameters.push(['Colunas', (command.columnIds ?? []).map((id) => columnHeader(id, columns)).join(', ') || 'Todas']); break;
+    case 'deduplicate': parameters.push(['Colunas', command.columnIds.map((id) => columnHeader(id, columns)).join(', ')], ['Manter', command.keep === 'first' ? 'Primeiro' : 'Último']); break;
+    case 'renameHeader': parameters.push(['Novo cabeçalho', command.header]); break;
+    case 'splitColumn': parameters.push(['Delimitador', command.delimiter], ['Novas colunas', command.newColumns.map(({ header }) => header).join(', ')]); break;
+    case 'combineColumns': parameters.push(['Separador', command.separator], ['Nova coluna', command.newColumn.header]); break;
+    case 'findReplace': parameters.push(['Localizar', displayCellValue(command.find)], ['Substituir por', displayCellValue(command.replace)], ['Sensível a maiúsculas', command.caseSensitive ? 'Sim' : 'Não']); break;
+    case 'dateConversion': parameters.push(['Formato', `${command.inputFormat} → ${command.outputFormat}`]); break;
+    case 'numberConversion': parameters.push(['Separador decimal', command.decimalSeparator]); break;
+    case 'currencyConversion': parameters.push(['Localidade', command.locale], ['Moeda', command.currency]); break;
+    case 'prefix': parameters.push(['Prefixo', command.value]); break;
+    case 'suffix': parameters.push(['Sufixo', command.value]); break;
+    case 'fixedValue': parameters.push(['Valor', displayCellValue(command.value)]); break;
+    case 'calculatedColumn': parameters.push(['Expressão', expressionLabel(command.expression, columns)]); break;
+    case 'conditionalRule': parameters.push(...command.updates.map(({ columnId, value }) => [`Gravar em ${columnHeader(columnId, columns)}`, displayCellValue(value)] as [string, React.ReactNode])); break;
+    case 'editCell': parameters.push(['Valor', displayCellValue(command.value)]); break;
+  }
+  const condition = 'when' in command ? conditionLabel(command.when, columns) : command.type === 'conditionalRule' ? conditionLabel(command.condition, columns) : undefined;
+  return { target, parameters, condition: condition ? `Condição: ${condition}` : undefined };
+}
+
+function expressionLabel(expression: Expression, columns: readonly DatasetColumn[]): string {
+  if (expression.type === 'literal') return displayCellValue(expression.value);
+  if (expression.type === 'column') return columnHeader(expression.columnId, columns);
+  if (expression.type === 'unary') return `${expression.operator}(${expressionLabel(expression.operand, columns)})`;
+  return `${expressionLabel(expression.left, columns)} ${expression.operator} ${expressionLabel(expression.right, columns)}`;
 }
 
 function transformValueLabel(type: Exclude<TransformCommand['type'], 'editCell'>): string {
@@ -1637,6 +1731,19 @@ const APP_STYLES = `
   .condition-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .command-toolbar { display: flex; align-items: center; gap: 7px; }
   .command-toolbar h3 { margin-right: auto; }
+  .command-table-scroll { overflow-x: auto; margin-top: 16px; border: 1px solid #e1e8e4; border-radius: 10px; background: white; }
+  .command-table { width: 100%; min-width: 900px; border-collapse: collapse; text-align: left; font-size: 12px; }
+  .command-table th, .command-table td { padding: 11px 10px; border-bottom: 1px solid #e8eeeb; vertical-align: top; }
+  .command-table thead th { color: #6c7a73; background: #f5f8f6; font-size: 10px; font-weight: 850; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
+  .command-table tbody tr:last-child th, .command-table tbody tr:last-child td { border-bottom: 0; }
+  .command-table tbody th { color: #274538; font-weight: 800; }
+  .command-index { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; color: #176b45; background: #e6f2eb; font-size: 11px; font-weight: 850; }
+  .command-target, .command-condition, .command-details dd { overflow-wrap: anywhere; white-space: pre-wrap; }
+  .command-details { display: grid; gap: 5px; margin: 0; }
+  .command-details div { display: grid; grid-template-columns: max-content minmax(120px, 1fr); gap: 7px; }
+  .command-details dt { color: #708078; font-size: 10px; font-weight: 800; }
+  .command-details dd { margin: 0; color: #243e32; }
+  .command-actions { display: flex; gap: 5px; }
   .command-toolbar button, .command-stack li button { min-height: 32px; padding: 5px 9px; border: 1px solid #cbd5d0; color: #355146; background: white; }
   .command-stack ol { display: grid; gap: 8px; margin: 16px 0 0; padding: 0; list-style: none; }
   .command-stack li { display: grid; grid-template-columns: 30px 1fr auto; align-items: center; gap: 9px; padding: 10px; border: 1px solid #e1e8e4; border-radius: 10px; background: white; }
