@@ -9,6 +9,7 @@ import { listSourceSheets, readSource } from '../io/source/read-source';
 import { exportWorkbook, scanExportRisks } from '../io/template/export-workbook';
 import { extractDestinationDataset } from '../io/template/extract-destination';
 import { openOoxmlPackage } from '../io/template/ooxml-package';
+import { preparePackageForExport } from '../io/template/protection-sanitizer';
 import { indexWorkbook } from '../io/template/workbook-index';
 import {
   DEFAULT_WORKER_BATCH_SIZE,
@@ -306,7 +307,9 @@ async function dispatchRequest(
       ensureNotCancelled(request.operationId);
       const packageForScan = await openOoxmlPackage(request.templateBuffer);
       ensureNotCancelled(request.operationId);
-      const risks = await scanExportRisks({ ...request.input, package: packageForScan });
+      const preparedPackage = await preparePackageForExport(packageForScan);
+      ensureNotCancelled(request.operationId);
+      const risks = await scanExportRisks({ ...request.input, package: preparedPackage });
       ensureNotCancelled(request.operationId);
       return { type: 'EXPORT_RISKS', risks };
     }

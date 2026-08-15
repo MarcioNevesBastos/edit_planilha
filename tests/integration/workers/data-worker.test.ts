@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import type { DataRow, Dataset } from '../../../src/domain/dataset/types';
 import { applyTransform } from '../../../src/domain/transforms/apply-transform';
+import { openOoxmlPackage } from '../../../src/io/template/ooxml-package';
 import type { WorkerResponse } from '../../../src/workers/protocol';
 import { createDataWorkerDispatcher } from '../../../src/workers/data-worker';
 
@@ -514,6 +515,72 @@ describe('data worker dispatcher', () => {
       operationId: 'export-small',
       result: expect.objectContaining({ type: 'EXPORT' }),
     }));
+  });
+
+  it('scans export risks after removing workbook and destination sheet protection', async () => {
+    const messages: WorkerResponse[] = [];
+    const dispatcher = createDataWorkerDispatcher((message) => messages.push(message));
+    const fixture = await readFile(new URL('../../../src/test-fixtures/workbooks/template-structured.xlsx', import.meta.url));
+    const protectedPackage = await openOoxmlPackage(
+      fixture.buffer.slice(fixture.byteOffset, fixture.byteOffset + fixture.byteLength) as ArrayBuffer,
+    );
+    protectedPackage.updatePart(
+      'xl/workbook.xml',
+      new TextDecoder().decode(protectedPackage.readPart('xl/workbook.xml')).replace(
+        '<sheets>',
+        '<workbookProtection lockStructure="1"/><sheets>',
+      ),
+    );
+    protectedPackage.addPart('EncryptionInfo', new Uint8Array([1]));
+
+    await dispatcher.dispatch({
+      type: 'SCAN_EXPORT_RISKS',
+      operationId: 'scan-sanitized-risks',
+      templateBuffer: await protectedPackage.emit(),
+      input: {
+        destination: {
+          sheetName: 'Protegida',
+          range: 'A1:C4',
+          dataStartRow: 2,
+          templateRow: 4,
+          columns: [
+            { id: 'target_id', column: 'A' },
+            { id: 'target_product', column: 'B' },
+          ],
+        },
+        mappings: [
+          { sourceColumnId: 'source_id', destinationColumnId: 'target_id', confidence: 'exact', score: 1, status: 'accepted' },
+        ],
+        writePlan: {
+          mode: 'replace',
+          headerRow: 1,
+          clears: [],
+          inserts: [{ incomingRowId: 'r-1', destinationRow: 2, values: { source_id: 1 } }],
+          updates: [],
+          kept: [],
+          duplicates: [],
+          rejected: [],
+          assignments: [{ kind: 'insert', incomingRowId: 'r-1', destinationRow: 2 }],
+        },
+        validationResult: { isValid: true, issues: [] },
+      },
+    });
+
+    const response = messages.find((message): message is Extract<WorkerResponse, { type: 'RESULT' }> => (
+      message.type === 'RESULT' && message.operationId === 'scan-sanitized-risks'
+    ));
+    expect(response?.result).toMatchObject({
+      type: 'EXPORT_RISKS',
+      risks: expect.arrayContaining([
+        expect.objectContaining({ code: 'unsupported-encrypted-package', severity: 'hard' }),
+      ]),
+    });
+    if (response?.result.type === 'EXPORT_RISKS') {
+      expect(response.result.risks.map((risk) => risk.code)).not.toEqual(expect.arrayContaining([
+        'protected-workbook',
+        'protected-destination-sheet',
+      ]));
+    }
   });
 
   it('processes export rows in cancellable batches and accounts for rejected rows', async () => {
