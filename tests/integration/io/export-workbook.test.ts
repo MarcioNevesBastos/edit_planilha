@@ -28,7 +28,6 @@ beforeEach(async () => {
 describe('exportWorkbook', () => {
   it('applies replace writes while preserving headers, styles, formulas, and unrelated parts', async () => {
     const untouched = snapshotParts(pkg, [
-      'xl/worksheets/sheet2.xml',
       'xl/drawings/drawing1.xml',
       'xl/charts/chart1.xml',
       'xl/media/image1.png',
@@ -83,12 +82,17 @@ describe('exportWorkbook', () => {
     expect(worksheet).toContain('<c r="E3" s="2"><f>C3*D3</f><v>31</v></c>');
     expect(worksheet).toContain('<c r="A5"/>');
     expect(worksheet).toContain('<c r="D5" s="2"/>');
+    expect(textPart(exported, 'xl/worksheets/sheet2.xml')).not.toContain('<sheetProtection');
+    expect(textPart(pkg, 'xl/worksheets/sheet2.xml')).toContain('<sheetProtection');
 
     expectParts(exported, untouched);
     expectParts(pkg, originalPackage);
     expectParts(
       exported,
-      new Map([...originalPackage].filter(([path]) => path !== 'xl/worksheets/sheet1.xml')),
+      new Map([...originalPackage].filter(([path]) => (
+        path !== 'xl/worksheets/sheet1.xml'
+        && path !== 'xl/worksheets/sheet2.xml'
+      ))),
     );
   });
 
@@ -172,10 +176,13 @@ describe('exportWorkbook', () => {
     expect(drawing).toContain('<xdr:to><xdr:col>11</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>12</xdr:row>');
     expect(drawing).toContain('<xdr:from><xdr:col>6</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>13</xdr:row>');
     expect(textPart(exported, 'xl/tables/table1.xml')).toContain('ref="A2:D7"');
+    expect(textPart(exported, 'xl/worksheets/sheet2.xml')).not.toContain('<sheetProtection');
+    expect(textPart(pkg, 'xl/worksheets/sheet2.xml')).toContain('<sheetProtection');
     expectParts(
       exported,
       new Map([...originalPackage].filter(([path]) => (
         path !== 'xl/worksheets/sheet1.xml'
+        && path !== 'xl/worksheets/sheet2.xml'
         && path !== 'xl/tables/table1.xml'
         && path !== 'xl/drawings/drawing1.xml'
       ))),
