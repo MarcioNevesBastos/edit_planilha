@@ -43,6 +43,7 @@ describe('session store', () => {
     store.resetSession();
 
     expect(store.getState()).toEqual({
+      baseMode: 'external',
       sourceFileMetadata: null,
       sourceFileBuffer: null,
       selectedSheets: { source: null, template: null },

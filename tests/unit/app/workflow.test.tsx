@@ -128,6 +128,18 @@ class FakeWorker implements WorkflowWorker {
           return { type: 'INDEX_TEMPLATE' as const, index: templateIndex };
         case 'EXTRACT_DESTINATION':
           return { type: 'EXTRACT_DESTINATION' as const, dataset: templateDataset };
+        case 'PREPARE_OUTPUT_BASE':
+          return {
+            type: 'PREPARE_OUTPUT_BASE' as const,
+            buffer: new ArrayBuffer(16),
+            destination: {
+              sheetName: 'Dados Preparados',
+              range: 'A1:B2',
+              dataStartRow: 2,
+              templateRow: 2,
+            },
+            index: templateIndex,
+          };
         case 'APPLY_TRANSFORMS':
           return {
             type: 'APPLY_TRANSFORMS' as const,
@@ -185,6 +197,13 @@ async function templateFile(name = 'modelo.xlsx'): Promise<File> {
   });
 }
 
+async function sourceWorkbookFile(name = 'origem.xlsx'): Promise<File> {
+  const bytes = await readFile('src/test-fixtures/workbooks/source-basic.xlsx');
+  return new File([bytes], name, {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+}
+
 async function importSource(user: ReturnType<typeof userEvent.setup>, name = 'origem.csv') {
   await user.upload(
     screen.getByLabelText('Selecionar arquivo de origem'),
@@ -231,6 +250,60 @@ async function prepareSummary(
 }
 
 describe('workflow navigation', () => {
+  it('continues without a model and skips automatic destination steps', async () => {
+    const user = userEvent.setup();
+    render(<App workerFactory={() => new FakeWorker()} />);
+
+    await importSource(user);
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    expect(screen.getByRole('heading', { name: 'Modelo' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Usar arquivo de origem como base')).toBeDisabled();
+
+    await user.click(screen.getByLabelText('Continuar sem modelo'));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+
+    expect(screen.getByRole('heading', { name: 'Transformações' })).toBeInTheDocument();
+    expect(screen.getByText('Destino automático')).toBeInTheDocument();
+    expect(screen.getByText('Mapeamento automático')).toBeInTheDocument();
+  });
+
+  it('prepares the automatic base before planning without showing mapping controls', async () => {
+    const user = userEvent.setup();
+    const worker = new FakeWorker();
+    render(<App workerFactory={() => worker} />);
+
+    await importSource(user);
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByLabelText('Continuar sem modelo'));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    expect(screen.getByRole('heading', { name: 'Transformações' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByRole('button', { name: 'Executar validação' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Avançar' })).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await user.click(screen.getByRole('radio', { name: /Substituir/ }));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    await screen.findByText('Inseridos');
+
+    expect(worker.requests.some(({ type }) => type === 'PREPARE_OUTPUT_BASE')).toBe(true);
+    expect(screen.queryByRole('table', { name: 'Revisão de mapeamentos' })).not.toBeInTheDocument();
+  });
+
+  it('allows an xlsx origin to become the preserved output base', async () => {
+    const user = userEvent.setup();
+    render(<App workerFactory={() => new FakeWorker()} />);
+
+    await user.upload(screen.getByLabelText('Selecionar arquivo de origem'), await sourceWorkbookFile());
+    await screen.findByText('origem.xlsx');
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    expect(screen.getByLabelText('Usar arquivo de origem como base')).toBeEnabled();
+    await user.click(screen.getByLabelText('Usar arquivo de origem como base'));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+
+    expect(screen.getByRole('heading', { name: 'Transformações' })).toBeInTheDocument();
+  });
+
   it('guards required steps and preserves imported files when navigating back', async () => {
     const user = userEvent.setup();
     const worker = new FakeWorker();

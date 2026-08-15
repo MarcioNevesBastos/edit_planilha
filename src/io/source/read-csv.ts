@@ -48,9 +48,10 @@ async function parseCsv(
   file: File,
   options: Pick<ReadSourceOptions, 'delimiter'>,
 ): Promise<Papa.ParseResult<string[]>> {
+  const delimiter = options.delimiter ?? await detectDelimiter(file);
   if (typeof FileReader === 'undefined') {
     return Papa.parse<string[]>(await file.text(), {
-      delimiter: options.delimiter,
+      delimiter,
       skipEmptyLines: false,
     });
   }
@@ -67,7 +68,7 @@ async function parseCsv(
     };
 
     Papa.parse<string[]>(file, {
-      delimiter: options.delimiter,
+      delimiter,
       skipEmptyLines: false,
       chunkSize: BROWSER_CSV_CHUNK_SIZE,
       worker: Papa.WORKERS_SUPPORTED,
@@ -83,4 +84,32 @@ async function parseCsv(
       }])),
     });
   });
+}
+
+async function detectDelimiter(file: File): Promise<string | undefined> {
+  const sample = await file.slice(0, 64 * 1024).text();
+  const firstLine = sample.split(/\r?\n/, 1)[0] ?? '';
+  const candidates = [',', ';', '\t', '|'];
+  const ranked = candidates
+    .map((candidate) => ({ candidate, score: delimiterCount(firstLine, candidate) }))
+    .sort((left, right) => right.score - left.score);
+  return ranked[0]?.score ? ranked[0].candidate : undefined;
+}
+
+function delimiterCount(value: string, delimiter: string): number {
+  let quoted = false;
+  let count = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === '"') {
+      if (quoted && value[index + 1] === '"') {
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (!quoted && character === delimiter) {
+      count += 1;
+    }
+  }
+  return count;
 }

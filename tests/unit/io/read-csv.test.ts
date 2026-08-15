@@ -84,6 +84,31 @@ describe('readCsv', () => {
     }
   });
 
+  it('auto-detects semicolon delimiters in browser chunk mode', async () => {
+    class ChunkedFileReader {
+      result: string | null = null;
+      onload: ((event: { target: ChunkedFileReader }) => void) | null = null;
+      onerror: (() => void) | null = null;
+
+      readAsText(chunk: Blob): void {
+        void chunk.text().then((result) => {
+          this.result = result;
+          this.onload?.({ target: this });
+        }, () => this.onerror?.());
+      }
+    }
+
+    vi.stubGlobal('FileReader', ChunkedFileReader);
+    try {
+      const dataset = await readCsv(new File([
+        'ID;Nome\n1;Ana\n',
+      ], 'dados.csv'));
+      expect(dataset.columns.map((column) => column.header)).toEqual(['ID', 'Nome']);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('raises structured errors when a row contains populated fields beyond its headers', async () => {
     await expect(readCsv(new File([
       'ID;Nome\n1;Ana;descartado\n',

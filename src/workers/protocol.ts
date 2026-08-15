@@ -4,11 +4,13 @@ import type { TransformCommand } from '../domain/transforms/types';
 import type { ValidationResult, ValidationRule } from '../domain/validation/types';
 import type { ExportInput, ExportRisk } from '../io/template/export-workbook';
 import type { WorkbookIndex } from '../io/template/workbook-index';
+import type { AutomaticDestination, OutputBaseMode } from '../io/template/output-base';
+import type { DatasetColumn } from '../domain/dataset/types';
 import type { ReadSourceOptions } from '../io/source/types';
 
 export const DEFAULT_WORKER_BATCH_SIZE = 1_000;
 
-export type WorkerPhase = 'import' | 'transform' | 'validate' | 'validate-unique' | 'validate-unique-output' | 'plan' | 'plan-assign' | 'export' | 'export-expansion' | 'export-rejected';
+export type WorkerPhase = 'import' | 'transform' | 'validate' | 'validate-unique' | 'validate-unique-output' | 'plan' | 'plan-assign' | 'prepare-base' | 'export' | 'export-expansion' | 'export-rejected';
 
 interface WorkerRequestBase {
   operationId: string;
@@ -26,6 +28,7 @@ export type WorkerRequest =
   | ({ type: 'LIST_SOURCE_SHEETS'; source: SourceBuffer } & WorkerRequestBase)
   | ({ type: 'INDEX_TEMPLATE'; templateBuffer: ArrayBuffer } & WorkerRequestBase)
   | ({ type: 'EXTRACT_DESTINATION'; templateBuffer: ArrayBuffer; sheetName: string; range: string } & WorkerRequestBase)
+  | ({ type: 'PREPARE_OUTPUT_BASE'; mode: OutputBaseMode; sourceBuffer?: ArrayBuffer; columns: readonly DatasetColumn[] } & WorkerRequestBase)
   | ({ type: 'APPLY_TRANSFORMS'; dataset: Dataset; commands: readonly TransformCommand[] } & WorkerRequestBase)
   | ({ type: 'VALIDATE'; dataset: Dataset; rules: readonly ValidationRule[] } & WorkerRequestBase)
   | ({ type: 'PLAN_WRITE'; input: WritePlanInput } & WorkerRequestBase)
@@ -37,6 +40,7 @@ export type WorkerResult =
   | { type: 'LIST_SOURCE_SHEETS'; sheetNames: string[] }
   | { type: 'INDEX_TEMPLATE'; index: WorkbookIndex }
   | { type: 'EXTRACT_DESTINATION'; dataset: Dataset }
+  | { type: 'PREPARE_OUTPUT_BASE'; buffer: ArrayBuffer; destination: AutomaticDestination; index: WorkbookIndex }
   | { type: 'APPLY_TRANSFORMS'; dataset: Dataset }
   | { type: 'VALIDATE'; validationResult: ValidationResult }
   | { type: 'PLAN_WRITE'; writePlan: WritePlan }
@@ -64,6 +68,7 @@ export function transferablesForRequest(request: WorkerRequest): Transferable[] 
     case 'INDEX_TEMPLATE':
     case 'EXTRACT_DESTINATION':
     case 'SCAN_EXPORT_RISKS': return [request.templateBuffer];
+    case 'PREPARE_OUTPUT_BASE': return request.sourceBuffer ? [request.sourceBuffer] : [];
     case 'EXPORT': return [request.templateBuffer];
     case 'APPLY_TRANSFORMS':
     case 'VALIDATE':

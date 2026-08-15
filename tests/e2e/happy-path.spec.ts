@@ -19,18 +19,19 @@ test('imports, transforms, validates, replaces, and exports an xlsx workbook', a
   await expect(page.getByText('Dados Modelo selecionada')).toBeVisible();
   await page.getByRole('button', { name: 'Avançar' }).click();
 
-  await page.getByLabel(/TabelaDestino/).check();
+  await page.getByLabel(/TabelaDestino/).click();
   await page.getByRole('button', { name: 'Avançar' }).click();
 
+  await page.getByRole('button', { name: 'Aceitar ID' }).click();
   await page.getByLabel('Destino para Nome').selectOption({ label: 'Produto' });
   await page.getByRole('button', { name: 'Aceitar Nome' }).click();
   await page.getByRole('button', { name: 'Avançar' }).click();
 
   await page.getByLabel('Tipo de transformação').selectOption('numberConversion');
   await page.getByLabel('Coluna principal').selectOption({ label: 'ID' });
-  await page.getByLabel('Valor').fill('.');
+  await page.getByRole('combobox', { name: 'Valor' }).fill('.');
   await page.getByRole('button', { name: 'Adicionar transformação' }).click();
-  await expect(page.getByRole('listitem').filter({ hasText: 'Converter número' })).toBeVisible();
+  await expect(page.getByRole('rowheader', { name: 'Converter número' })).toBeVisible();
   await page.getByRole('button', { name: 'Avançar' }).click();
 
   await page.getByRole('button', { name: 'Executar validação' }).click();
@@ -45,6 +46,7 @@ test('imports, transforms, validates, replaces, and exports an xlsx workbook', a
   await expect(page.getByRole('heading', { name: 'Resumo' })).toBeVisible();
   await expect(page.getByText('Inseridos').locator('..').getByText('2')).toBeVisible();
   await page.getByRole('button', { name: 'Avançar' }).click();
+  await page.getByRole('radio', { name: 'Não, somente erros' }).check();
 
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Exportar .xlsx' }).click();

@@ -54,6 +54,44 @@ describe('data worker dispatcher', () => {
     expect(plan).toMatchObject({ result: { writePlan: { inserts: [{ destinationRow: 2 }] } } });
   });
 
+  it('prepares automatic output bases inside the worker', async () => {
+    const messages: WorkerResponse[] = [];
+    const dispatcher = createDataWorkerDispatcher((message) => messages.push(message));
+    const source = await readFile(new URL('../../../src/test-fixtures/workbooks/source-basic.xlsx', import.meta.url));
+    const sourceBuffer = source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength) as ArrayBuffer;
+
+    await dispatcher.dispatch({
+      type: 'PREPARE_OUTPUT_BASE',
+      operationId: 'prepare-none',
+      mode: 'none',
+      columns: dataset([]).columns,
+    });
+    await dispatcher.dispatch({
+      type: 'PREPARE_OUTPUT_BASE',
+      operationId: 'prepare-source',
+      mode: 'source',
+      sourceBuffer,
+      columns: dataset([]).columns,
+    });
+
+    expect(messages).toContainEqual(expect.objectContaining({
+      type: 'RESULT',
+      operationId: 'prepare-none',
+      result: expect.objectContaining({
+        type: 'PREPARE_OUTPUT_BASE',
+        destination: expect.objectContaining({ sheetName: 'Dados Preparados' }),
+      }),
+    }));
+    expect(messages).toContainEqual(expect.objectContaining({
+      type: 'RESULT',
+      operationId: 'prepare-source',
+      result: expect.objectContaining({
+        type: 'PREPARE_OUTPUT_BASE',
+        destination: expect.objectContaining({ sheetName: 'Dados Preparados' }),
+      }),
+    }));
+  });
+
   it('keeps conditional typed replacements equivalent across worker batches', async () => {
     const messages: WorkerResponse[] = [];
     const dispatcher = createDataWorkerDispatcher((message) => messages.push(message));

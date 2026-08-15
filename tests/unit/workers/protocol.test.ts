@@ -21,6 +21,7 @@ function requestLabel(request: WorkerRequest): string {
     case 'LIST_SOURCE_SHEETS': return request.type;
     case 'INDEX_TEMPLATE': return request.type;
     case 'EXTRACT_DESTINATION': return request.type;
+    case 'PREPARE_OUTPUT_BASE': return request.type;
     case 'APPLY_TRANSFORMS': return request.type;
     case 'VALIDATE': return request.type;
     case 'PLAN_WRITE': return request.type;
@@ -49,6 +50,7 @@ describe('worker protocol', () => {
       { type: 'LIST_SOURCE_SHEETS', operationId: 'list', source: { name: 'source.xlsx', buffer: sourceBuffer } },
       { type: 'INDEX_TEMPLATE', operationId: 'index', templateBuffer },
       { type: 'EXTRACT_DESTINATION', operationId: 'extract', templateBuffer, sheetName: 'Data', range: 'A1:A2' },
+      { type: 'PREPARE_OUTPUT_BASE', operationId: 'prepare-base', mode: 'none', columns: [] },
       { type: 'APPLY_TRANSFORMS', operationId: 'transform', dataset, commands: [] },
       { type: 'VALIDATE', operationId: 'validate', dataset, rules: [] },
       {
@@ -100,7 +102,7 @@ describe('worker protocol', () => {
     ];
 
     expect(requests.map(requestLabel)).toEqual([
-      'IMPORT_SOURCE', 'LIST_SOURCE_SHEETS', 'INDEX_TEMPLATE', 'EXTRACT_DESTINATION',
+      'IMPORT_SOURCE', 'LIST_SOURCE_SHEETS', 'INDEX_TEMPLATE', 'EXTRACT_DESTINATION', 'PREPARE_OUTPUT_BASE',
       'APPLY_TRANSFORMS', 'VALIDATE', 'PLAN_WRITE', 'SCAN_EXPORT_RISKS', 'EXPORT',
     ]);
     expect(responses.map(responseLabel)).toEqual(['PROGRESS', 'RESULT', 'ERROR', 'CANCELLED']);
@@ -125,6 +127,9 @@ describe('worker protocol', () => {
         validationResult: { isValid: true, issues: [] },
       },
     };
+    const prepareRequest: WorkerRequest = {
+      type: 'PREPARE_OUTPUT_BASE', operationId: 'prepare-base', mode: 'source', sourceBuffer, columns: [],
+    };
     const progress: WorkerResponse = {
       type: 'PROGRESS', operationId: 'import', completed: 1, total: 2, phase: 'import',
     };
@@ -135,6 +140,7 @@ describe('worker protocol', () => {
 
     expect(transferablesForRequest(importRequest)).toEqual([sourceBuffer]);
     expect(transferablesForRequest(exportRequest)).toEqual([templateBuffer]);
+    expect(transferablesForRequest(prepareRequest)).toEqual([sourceBuffer]);
     expect(Object.keys(progress).sort()).toEqual(['completed', 'operationId', 'phase', 'total', 'type']);
     expect(transferablesForResponse(result)).toEqual([resultBuffer]);
   });

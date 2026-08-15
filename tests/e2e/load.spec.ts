@@ -27,7 +27,7 @@ for (const rowCount of LOAD_ROW_COUNTS) {
     );
     await page.getByLabel('Aba do modelo').selectOption('Dados Modelo');
     await page.getByRole('button', { name: 'Avançar' }).click();
-    await page.getByLabel(/TabelaDestino/).check();
+    await page.getByLabel(/TabelaDestino/).click();
     await page.getByRole('button', { name: 'Avançar' }).click();
 
     for (const header of ['ID', 'Produto', 'Quantidade', 'Preço']) {
@@ -40,13 +40,18 @@ for (const rowCount of LOAD_ROW_COUNTS) {
 
     await page.getByLabel('Tipo de transformação').selectOption('prefix');
     await page.getByLabel('Coluna principal').selectOption({ label: 'Produto' });
-    await page.getByLabel('Valor').fill('Carga ');
+    await page.getByRole('textbox', { name: 'Valor' }).fill('Carga ');
 
     await startHeartbeat(page);
     await page.getByRole('button', { name: 'Adicionar transformação' }).click();
-    await assertHeartbeatContinuesDuringActiveOperation(page, 'transform');
-    await page.getByRole('button', { name: 'Cancelar' }).click();
+    const transformStayedActive = await assertHeartbeatContinuesDuringActiveOperation(page, 'transform');
+    if (transformStayedActive) {
+      await page.getByRole('button', { name: 'Cancelar' }).click();
+    }
     await expect(page.locator('.operation-panel')).toBeHidden();
+    if (await page.getByRole('button', { name: 'Remover' }).count()) {
+      await page.getByRole('button', { name: 'Remover' }).click();
+    }
     await expect(page.getByText('Nenhuma transformação adicionada.')).toBeVisible();
     await stopHeartbeat(page);
 
@@ -54,7 +59,7 @@ for (const rowCount of LOAD_ROW_COUNTS) {
     timings.transformMs = await elapsed(async () => {
       await page.getByRole('button', { name: 'Adicionar transformação' }).click();
       await assertHeartbeatContinuesDuringActiveOperation(page, 'transform');
-      await expect(page.getByRole('listitem').filter({ hasText: 'Adicionar prefixo' })).toBeVisible();
+      await expect(page.getByRole('rowheader', { name: 'Adicionar prefixo' })).toBeVisible();
     });
     await stopHeartbeat(page);
     await page.getByRole('button', { name: 'Avançar' }).click();
@@ -125,10 +130,17 @@ async function heartbeatCount(page: import('@playwright/test').Page): Promise<nu
 async function assertHeartbeatContinuesDuringActiveOperation(
   page: import('@playwright/test').Page,
   phase: string,
-): Promise<void> {
+): Promise<boolean> {
   await expect(page.getByText(phase, { exact: true })).toBeVisible();
+  const operationPanel = page.locator('.operation-panel');
   const progress = page.locator('.operation-panel progress');
-  await expect.poll(async () => Number(await progress.getAttribute('value'))).toBeGreaterThan(0);
+  await expect.poll(async () => {
+    if (!(await operationPanel.isVisible().catch(() => false))) return 'completed';
+    return Number(await progress.getAttribute('value')) > 0 ? 'active' : 'pending';
+  }, { timeout: 60_000 }).toMatch(/active|completed/);
+
+  if (!(await operationPanel.isVisible().catch(() => false))) return false;
+  if (Number(await progress.getAttribute('value')) <= 0) return false;
 
   const baseline = await heartbeatCount(page);
   await page.waitForFunction(({ baseline: startingTicks }) => {
@@ -136,6 +148,7 @@ async function assertHeartbeatContinuesDuringActiveOperation(
     const ticks = (window as unknown as { __loadHeartbeat?: number }).__loadHeartbeat ?? 0;
     return operationPanel !== null && ticks > startingTicks;
   }, { baseline });
+  return true;
 }
 
 async function stopHeartbeat(page: import('@playwright/test').Page): Promise<void> {

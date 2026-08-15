@@ -47,7 +47,8 @@ import { Stepper, type WorkflowStepDefinition } from './components/Stepper';
 import { ValidationPanel } from './components/ValidationPanel';
 import { ConditionBuilder } from './components/ConditionBuilder';
 import { ValuePicker } from './components/ValuePicker';
-import { createSessionStore, type FileMetadata } from './state/session-store';
+import { createSessionStore, type BaseMode, type FileMetadata } from './state/session-store';
+import type { AutomaticDestination } from '../io/template/output-base';
 
 const STEPS = [
   { id: 'source', label: 'Origem' },
@@ -121,6 +122,13 @@ interface PendingOperation {
   onError?(message: string): void;
 }
 
+interface PreparedOutputState {
+  fingerprint: string;
+  buffer: ArrayBuffer;
+  destination: AutomaticDestination;
+  index: WorkbookIndex;
+}
+
 interface CommandHistory {
   past: TransformCommand[][];
   future: TransformCommand[][];
@@ -192,6 +200,34 @@ function reconcileMappings(
       status: 'review-required' as const,
     };
   });
+}
+
+function automaticMappings(dataset: Dataset): ReviewedMapping[] {
+  return dataset.columns.map((column) => ({
+    sourceColumnId: column.id,
+    destinationColumnId: column.id,
+    confidence: 'exact' as const,
+    score: 1,
+    status: 'accepted' as const,
+    action: 'map' as const,
+  }));
+}
+
+function automaticTemplateDataset(dataset: Dataset): Dataset {
+  return {
+    columns: dataset.columns.map((column, index) => ({ ...column, sourceIndex: index })),
+    rows: [],
+  };
+}
+
+function automaticDestination(candidate: AutomaticDestination): DestinationCandidate {
+  return {
+    kind: 'detected-region',
+    sheetName: candidate.sheetName,
+    range: candidate.range,
+    confidence: 'high',
+    explanation: 'Destino criado automaticamente para a saída sem modelo separado.',
+  };
 }
 
 function changedSchema(previous: Dataset, next: Dataset): boolean {
@@ -367,6 +403,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   const [destinationWarnings, setDestinationWarnings] = useState<string[]>([]);
   const [selectedDestination, setSelectedDestination] = useState<DestinationCandidate | null>(null);
   const [templateDataset, setTemplateDataset] = useState<Dataset | null>(null);
+  const [preparedOutput, setPreparedOutput] = useState<PreparedOutputState | null>(null);
   const [writeMode, setWriteMode] = useState<WriteMode>('replace');
   const [keyColumnIds, setKeyColumnIds] = useState<string[]>([]);
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
@@ -391,12 +428,18 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   const commandHistory = useRef<CommandHistory>({ past: [], future: [] });
 
   const mappings = session.mappings as ReviewedMapping[];
+  const automaticMode = session.baseMode !== 'external';
   const commands = session.transforms as TransformCommand[];
   const userRules = session.validationRules as ValidationRule[];
   const effectiveDataset = useMemo(
     () => session.dataset ? effectiveIncomingDataset(session.dataset, mappings) : null,
     [mappings, session.dataset],
   );
+  const automaticBaseFingerprint = useMemo(() => JSON.stringify({
+    mode: session.baseMode,
+    datasetRevision,
+    columns: effectiveDataset?.columns.map(({ id, header, detectedType }) => ({ id, header, detectedType })) ?? [],
+  }), [datasetRevision, effectiveDataset?.columns, session.baseMode]);
   const currentPlanFingerprint = useMemo(() => writePlanFingerprint(
     writeMode,
     keyColumnIds,
@@ -406,6 +449,8 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   ), [datasetRevision, keyColumnIds, mappings, validationResult, writeMode]);
   const currentWritePlan = writePlanFingerprintValue === currentPlanFingerprint ? writePlan : null;
   const currentExportRisks = riskFingerprint === currentPlanFingerprint ? exportRisks : null;
+  const activeTemplateBuffer = automaticMode ? preparedOutput?.buffer ?? null : session.templateFileBuffer;
+  const activeTemplateIndex = automaticMode ? preparedOutput?.index ?? null : templateIndex;
   const validationErrorCount = useMemo(() => new Set(
     validationResult?.issues
       .filter(({ severity }) => (severity ?? 'error') === 'error')
@@ -506,6 +551,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
     setWritePlan(null);
     setExported(false);
     setKeyColumnIds([]);
+    setPreparedOutput(null);
   }, [store]);
 
   const importSourceFile = useCallback(async (file: File, sheetName?: string, preflightId?: string) => {
@@ -526,9 +572,15 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         onResult: (result) => {
           if (result.type !== 'IMPORT_SOURCE') return;
           invalidateAfterSource();
-          const refreshedMappings: ReviewedMapping[] = templateDataset
-            ? reconcileMappings(result.dataset.columns, templateDataset.columns, mappings)
-            : [];
+          const currentBaseMode = store.getState().baseMode;
+          const nextBaseMode: BaseMode = currentBaseMode === 'source' && extension(file.name) !== 'xlsx'
+            ? 'external'
+            : currentBaseMode;
+          const refreshedMappings: ReviewedMapping[] = nextBaseMode === 'external'
+            ? templateDataset
+              ? reconcileMappings(result.dataset.columns, templateDataset.columns, mappings)
+              : []
+            : automaticMappings(result.dataset);
           setBaseDataset(result.dataset);
           setDatasetRevision((current) => current + 1);
           setPendingSourceFile(null);
@@ -538,6 +590,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
             sourceFileBuffer: stableBuffer,
             selectedSheets: { ...store.getState().selectedSheets, source: sheetName ?? null },
             dataset: result.dataset,
+            baseMode: nextBaseMode,
             mappings: refreshedMappings,
           });
         },
@@ -581,6 +634,33 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
     }
   }, [beginPreflight, finishPreflight, importSourceFile, operationId, runOperation]);
 
+  const selectBaseMode = useCallback((baseMode: BaseMode) => {
+    setTemplateIndex(null);
+    setDestinationCandidates([]);
+    setDestinationWarnings([]);
+    setSelectedDestination(null);
+    setTemplateDataset(null);
+    setPreparedOutput(null);
+    setValidationResult(null);
+    setWritePlan(null);
+    setWritePlanFingerprintValue(null);
+    setExportRisks(null);
+    setRiskFingerprint(null);
+    setReviewedRiskIds([]);
+    setExported(false);
+    setKeyColumnIds([]);
+    store.setState({
+      baseMode,
+      templateMetadata: null,
+      templateFileBuffer: null,
+      selectedSheets: { ...store.getState().selectedSheets, template: null },
+      mappings: baseMode === 'external' || !store.getState().dataset
+        ? []
+        : automaticMappings(store.getState().dataset!),
+      validationRules: [],
+    });
+  }, [store]);
+
   const selectTemplateFile = useCallback(async (file: File) => {
     if (extension(file.name) !== 'xlsx') {
       setError('O modelo deve ser um arquivo .xlsx.');
@@ -605,11 +685,13 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
           setDestinationWarnings([]);
           setSelectedDestination(null);
           setTemplateDataset(null);
+          setPreparedOutput(null);
           setValidationResult(null);
           setWritePlan(null);
           setExported(false);
           setKeyColumnIds([]);
           store.setState({
+            baseMode: 'external',
             templateMetadata: metadata(file),
             templateFileBuffer: buffer,
             selectedSheets: { ...store.getState().selectedSheets, template: null },
@@ -631,6 +713,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
     setDestinationWarnings(destinationDetectionWarnings(templateIndex, sheetName));
     setSelectedDestination(null);
     setTemplateDataset(null);
+    setPreparedOutput(null);
     setValidationResult(null);
     setWritePlan(null);
     setExported(false);
@@ -688,9 +771,11 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         store.setState({
           transforms: nextCommands,
           dataset: result.dataset,
-          ...(schemaChanged && templateDataset
-            ? { mappings: reconcileMappings(result.dataset.columns, templateDataset.columns, mappings) }
-            : {}),
+          ...(schemaChanged && automaticMode
+            ? { mappings: automaticMappings(result.dataset) }
+            : schemaChanged && templateDataset
+              ? { mappings: reconcileMappings(result.dataset.columns, templateDataset.columns, mappings) }
+              : {}),
           ...(schemaChanged
             ? { validationRules: userRules.filter((rule) => validationRuleUsesOnlyColumns(rule, new Set(result.dataset.columns.map(({ id }) => id)))) }
             : {}),
@@ -698,12 +783,13 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         setDatasetRevision((current) => current + 1);
         setValidationResult(null);
         setWritePlan(null);
+        setPreparedOutput(null);
         if (schemaChanged) setKeyColumnIds([]);
         setExported(false);
         after?.(effectiveIncomingDataset(result.dataset, mappings));
       },
     });
-  }, [baseDataset, mappings, operationId, runOperation, store, templateDataset, userRules]);
+  }, [automaticMode, baseDataset, mappings, operationId, runOperation, store, templateDataset, userRules]);
 
   const replaceCommands = useCallback((nextCommands: TransformCommand[]) => {
     const previous = [...commands];
@@ -776,22 +862,26 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
     });
   }, [detectedRules, effectiveDataset, operationId, runOperation, userRules]);
 
-  const runWritePlan = useCallback(() => {
-    if (!effectiveDataset || !templateDataset || !selectedDestination) return;
-    const incoming = effectiveDataset;
-    const rows = rangeRows(selectedDestination.range);
+  const runWritePlanCore = useCallback((
+    incoming: Dataset,
+    destinationDataset: Dataset,
+    destination: DestinationCandidate,
+    mappingsForPlan: readonly ReviewedMapping[],
+    fingerprint: string,
+  ) => {
+    const rows = rangeRows(destination.range);
+    const acceptedColumns = acceptedMappedSourceIds(mappingsForPlan);
     const id = operationId('plan');
-    const fingerprint = currentPlanFingerprint;
     runOperation({
       type: 'PLAN_WRITE',
       operationId: id,
       input: {
         mode: writeMode,
         incoming,
-        existing: mapExistingForPlanning(templateDataset, incoming, mappings),
+        existing: mapExistingForPlanning(destinationDataset, incoming, mappingsForPlan),
         destination: { headerRow: rows.headerRow, dataStartRow: rows.dataStartRow },
-        comparedColumnIds: [...acceptedMappedColumns],
-        ...(writeMode === 'update' ? { keyColumnIds: keyColumnIds.filter((id) => acceptedMappedColumns.has(id)) } : {}),
+        comparedColumnIds: [...acceptedColumns],
+        ...(writeMode === 'update' ? { keyColumnIds: keyColumnIds.filter((columnId) => acceptedColumns.has(columnId)) } : {}),
       },
     }, 'Calculando resumo', {
       onResult: (result) => {
@@ -807,29 +897,77 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         setHighestVisited((current) => Math.max(current, 8));
       },
     });
-  }, [acceptedMappedColumns, currentPlanFingerprint, effectiveDataset, keyColumnIds, mappings, operationId, runOperation, selectedDestination, templateDataset, writeMode]);
+  }, [keyColumnIds, operationId, runOperation, writeMode]);
+
+  const runWritePlan = useCallback(() => {
+    if (!effectiveDataset) return;
+    if (automaticMode) {
+      if (preparedOutput?.fingerprint === automaticBaseFingerprint && templateDataset && selectedDestination) {
+        runWritePlanCore(effectiveDataset, templateDataset, selectedDestination, mappings, currentPlanFingerprint);
+        return;
+      }
+      runOperation({
+        type: 'PREPARE_OUTPUT_BASE',
+        operationId: operationId('prepare-base'),
+        mode: session.baseMode === 'source' ? 'source' : 'none',
+        ...(session.baseMode === 'source' && session.sourceFileBuffer
+          ? { sourceBuffer: session.sourceFileBuffer.slice(0) }
+          : {}),
+        columns: effectiveDataset.columns,
+      }, 'Preparando base de saída', {
+        onResult: (result) => {
+          if (result.type !== 'PREPARE_OUTPUT_BASE') return;
+          const destination = automaticDestination(result.destination);
+          const destinationDataset = automaticTemplateDataset(effectiveDataset);
+          const mappingsForPlan = automaticMappings(effectiveDataset);
+          const fingerprint = writePlanFingerprint(
+            writeMode,
+            keyColumnIds,
+            mappingsForPlan,
+            validationResult,
+            datasetRevision,
+          );
+          setPreparedOutput({
+            fingerprint: automaticBaseFingerprint,
+            buffer: result.buffer,
+            destination: result.destination,
+            index: result.index,
+          });
+          setTemplateIndex(result.index);
+          setDestinationCandidates([destination]);
+          setSelectedDestination(destination);
+          setTemplateDataset(destinationDataset);
+          store.setState({ mappings: mappingsForPlan });
+          runWritePlanCore(effectiveDataset, destinationDataset, destination, mappingsForPlan, fingerprint);
+        },
+      });
+      return;
+    }
+    if (!templateDataset || !selectedDestination) return;
+    runWritePlanCore(effectiveDataset, templateDataset, selectedDestination, mappings, currentPlanFingerprint);
+  }, [automaticBaseFingerprint, automaticMode, currentPlanFingerprint, datasetRevision, effectiveDataset, keyColumnIds, mappings, operationId, preparedOutput, runOperation, runWritePlanCore, selectedDestination, session.baseMode, session.sourceFileBuffer, store, templateDataset, validationResult, writeMode]);
 
   const exportInput = useCallback((plan: WritePlan, riskIds: readonly string[] = [], includeWarnings = false) => {
-    if (!validationResult || !selectedDestination || !templateDataset || !templateIndex || !session.dataset) return null;
+    if (!validationResult || !selectedDestination || !templateDataset || !activeTemplateIndex || !session.dataset) return null;
     return {
-      destination: destinationForExport(selectedDestination, templateDataset, templateIndex),
+      destination: destinationForExport(selectedDestination, templateDataset, activeTemplateIndex),
       mappings: acceptedMappings(mappings),
       writePlan: plan,
       validationResult,
       rejectedRows: buildRejectedRows(session.dataset, validationResult, plan, includeWarnings),
       reviewedRiskIds: riskIds,
     };
-  }, [mappings, selectedDestination, session.dataset, templateDataset, templateIndex, validationResult]);
+  }, [activeTemplateIndex, mappings, selectedDestination, session.dataset, templateDataset, validationResult]);
 
   const runExportRiskScan = useCallback(() => {
-    if (!currentWritePlan || !session.templateFileBuffer) return;
+    if (!currentWritePlan || !activeTemplateBuffer) return;
     const input = exportInput(currentWritePlan);
     if (!input) return;
     const fingerprint = currentPlanFingerprint;
     runOperation({
       type: 'SCAN_EXPORT_RISKS',
       operationId: operationId('export-risks'),
-      templateBuffer: session.templateFileBuffer.slice(0),
+      templateBuffer: activeTemplateBuffer.slice(0),
       input,
     }, 'Verificando riscos', {
       onResult: (result) => {
@@ -842,10 +980,10 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         setHighestVisited((current) => Math.max(current, 9));
       },
     });
-  }, [currentPlanFingerprint, currentWritePlan, exportInput, operationId, runOperation, session.templateFileBuffer]);
+  }, [activeTemplateBuffer, currentPlanFingerprint, currentWritePlan, exportInput, operationId, runOperation]);
 
   const exportWorkbook = useCallback(() => {
-    if (!currentWritePlan || !session.templateFileBuffer) return;
+    if (!currentWritePlan || !activeTemplateBuffer) return;
     if (includeValidationWarnings === null) return;
     if (validationErrorCount > 0 && exportValidationErrors !== true) return;
     const input = exportInput(currentWritePlan, reviewedRiskIds, includeValidationWarnings);
@@ -854,7 +992,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
     runOperation({
       type: 'EXPORT',
       operationId: id,
-      templateBuffer: session.templateFileBuffer.slice(0),
+      templateBuffer: activeTemplateBuffer.slice(0),
       input,
     }, 'Exportando planilha', {
       onResult: (result) => {
@@ -871,16 +1009,16 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         setExported(true);
       },
     });
-  }, [currentWritePlan, exportInput, exportValidationErrors, includeValidationWarnings, operationId, reviewedRiskIds, runOperation, session.templateFileBuffer, validationErrorCount]);
+  }, [activeTemplateBuffer, currentWritePlan, exportInput, exportValidationErrors, includeValidationWarnings, operationId, reviewedRiskIds, runOperation, validationErrorCount]);
 
   const canAdvance = useMemo(() => {
     switch (stepIndex) {
       case 0: return session.dataset !== null;
-      case 1: return session.templateFileBuffer !== null && session.selectedSheets.template !== null;
-      case 2: return selectedDestination !== null;
-      case 3: return mappings.length > 0
+      case 1: return automaticMode || (session.templateFileBuffer !== null && session.selectedSheets.template !== null);
+      case 2: return automaticMode || selectedDestination !== null;
+      case 3: return automaticMode || (mappings.length > 0
         && mappings.every(({ status }) => status === 'accepted')
-        && duplicateMappings.size === 0;
+        && duplicateMappings.size === 0);
       case 4: return true;
       case 5: return validationResult !== null;
       case 6: return true;
@@ -889,7 +1027,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
       case 8: return currentWritePlan !== null;
       default: return false;
     }
-  }, [acceptedMappedColumns, currentWritePlan, duplicateMappings.size, keyColumnIds, mappings, selectedDestination, session.dataset, session.selectedSheets.template, session.templateFileBuffer, stepIndex, validationResult, writeMode]);
+  }, [acceptedMappedColumns, automaticMode, currentWritePlan, duplicateMappings.size, keyColumnIds, mappings, selectedDestination, session.dataset, session.selectedSheets.template, session.templateFileBuffer, stepIndex, validationResult, writeMode]);
 
   const advance = () => {
     if (!canAdvance || activeOperation) return;
@@ -901,10 +1039,24 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
       runExportRiskScan();
       return;
     }
+    if (stepIndex === 1 && automaticMode) {
+      setStepIndex(4);
+      setHighestVisited((current) => Math.max(current, 4));
+      return;
+    }
     const next = Math.min(STEPS.length - 1, stepIndex + 1);
     setStepIndex(next);
     setHighestVisited((current) => Math.max(current, next));
   };
+
+  const displayedSteps = automaticMode
+    ? STEPS.map((step, index) => index === 2
+      ? { ...step, label: 'Destino automático' }
+      : index === 3
+        ? { ...step, label: 'Mapeamento automático' }
+        : step)
+    : STEPS;
+  const lockedStepIndices = automaticMode ? new Set([2, 3]) : new Set<number>();
 
   const cancelOperation = () => {
     if (!activeOperation) return;
@@ -939,6 +1091,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
             setDestinationWarnings([]);
             setSelectedDestination(null);
             setTemplateDataset(null);
+            setPreparedOutput(null);
             setValidationResult(null);
             setExportValidationErrors(null);
             setWritePlan(null);
@@ -956,9 +1109,10 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
       </header>
 
       <Stepper
-        steps={STEPS}
+        steps={displayedSteps}
         currentIndex={stepIndex}
         highestVisitedIndex={highestVisited}
+        lockedIndices={lockedStepIndices}
         disabled={workflowBusy}
         onSelect={setStepIndex}
       />
@@ -1013,32 +1167,77 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
 
           {stepIndex === 1 ? (
             <>
-              <FileDrop
-                accept=".xlsx"
-                actionLabel="Selecionar arquivo modelo"
-                description="O arquivo original permanecerá intacto. Formato aceito: .xlsx"
-                fileName={session.templateMetadata?.name}
-                disabled={workflowBusy}
-                onSelect={(file) => void selectTemplateFile(file)}
-              />
-              {templateIndex ? (
-                <label className="field">Aba do modelo
-                  <select
-                    value={session.selectedSheets.template ?? ''}
+              <fieldset className="base-mode-options">
+                <legend>Base da saída</legend>
+                <label>
+                  <input
+                    type="radio"
+                    name="base-mode"
+                    value="external"
+                    checked={session.baseMode === 'external'}
                     disabled={workflowBusy}
-                    onChange={(event) => selectTemplateSheet(event.currentTarget.value)}
-                  >
-                    <option value="" disabled>Selecione uma aba</option>
-                    {templateIndex.sheets.map((sheet) => <option value={sheet.name} key={sheet.name}>{sheet.name}</option>)}
-                  </select>
+                    onChange={() => selectBaseMode('external')}
+                  />
+                  Carregar arquivo modelo
                 </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="base-mode"
+                    value="source"
+                    checked={session.baseMode === 'source'}
+                    disabled={workflowBusy || extension(session.sourceFileMetadata?.name ?? '') !== 'xlsx'}
+                    onChange={() => selectBaseMode('source')}
+                  />
+                  Usar arquivo de origem como base
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="base-mode"
+                    value="none"
+                    checked={session.baseMode === 'none'}
+                    disabled={workflowBusy}
+                    onChange={() => selectBaseMode('none')}
+                  />
+                  Continuar sem modelo
+                </label>
+              </fieldset>
+              {session.baseMode === 'source' && extension(session.sourceFileMetadata?.name ?? '') !== 'xlsx' ? (
+                <p className="error-banner">A origem precisa ser um arquivo .xlsx para ser usada como base.</p>
               ) : null}
-              {session.selectedSheets.template ? <p className="selection-note">{session.selectedSheets.template} selecionada</p> : null}
+              {session.baseMode === 'source' || session.baseMode === 'none' ? (
+                <p className="selection-note">Destino e mapeamento serão configurados automaticamente.</p>
+              ) : (
+                <>
+                  <FileDrop
+                    accept=".xlsx"
+                    actionLabel="Selecionar arquivo modelo"
+                    description="O arquivo original permanecerá intacto. Formato aceito: .xlsx"
+                    fileName={session.templateMetadata?.name}
+                    disabled={workflowBusy}
+                    onSelect={(file) => void selectTemplateFile(file)}
+                  />
+                  {templateIndex ? (
+                    <label className="field">Aba do modelo
+                      <select
+                        value={session.selectedSheets.template ?? ''}
+                        disabled={workflowBusy}
+                        onChange={(event) => selectTemplateSheet(event.currentTarget.value)}
+                      >
+                        <option value="" disabled>Selecione uma aba</option>
+                        {templateIndex.sheets.map((sheet) => <option value={sheet.name} key={sheet.name}>{sheet.name}</option>)}
+                      </select>
+                    </label>
+                  ) : null}
+                  {session.selectedSheets.template ? <p className="selection-note">{session.selectedSheets.template} selecionada</p> : null}
+                </>
+              )}
             </>
           ) : null}
 
           {stepIndex === 2 ? (
-            <div className="candidate-list">
+            automaticMode ? <p className="selection-note">Destino automático: a saída será criada em uma nova aba.</p> : <div className="candidate-list">
               {destinationCandidates.map((candidate, index) => (
                 <label key={`${candidate.kind}-${candidate.range}`} data-selected={selectedDestination === candidate || undefined}>
                   <input
@@ -1193,7 +1392,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
             <div className="export-panel">
               <div className="export-icon" aria-hidden="true">XLSX</div>
               <h3>{exported ? 'Arquivo exportado' : 'Tudo pronto para exportar'}</h3>
-              <p>O processamento acontece no navegador e o modelo original não será alterado.</p>
+              <p>O processamento acontece no navegador e a base original não será alterada.</p>
               {currentExportRisks ? (
                 <section className="risk-list" aria-label="Riscos de exportação">
                   {currentExportRisks.length === 0 ? <p>Nenhum risco de compatibilidade detectado.</p> : null}
@@ -1714,6 +1913,8 @@ const APP_STYLES = `
   .stepper button { position: relative; z-index: 1; display: grid; justify-items: center; gap: 7px; width: 100%; border: 0; color: #718078; background: transparent; font-size: 11px; font-weight: 700; white-space: nowrap; }
   .stepper button span { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid #bdcac4; border-radius: 50%; background: #f2f5f3; font-size: 10px; }
   .stepper li[data-state="current"] button { color: #124f35; }
+  .stepper li[data-state="automatic"] button { color: #8a9a92; }
+  .stepper li[data-state="automatic"] button span { border-color: #cbd8d1; color: #7f9087; background: #eef3f0; }
   .stepper li[data-state="current"] button span, .stepper li[data-state="visited"] button span { border-color: #176b45; color: white; background: #176b45; }
   .workflow-card { overflow: hidden; border: 1px solid #d9e1dd; border-radius: 22px; background: rgba(255,255,255,.94); box-shadow: 0 20px 70px rgba(28,54,42,.09); }
   .step-heading { padding: 28px 34px 24px; border-bottom: 1px solid #e6ebe8; }
@@ -1735,6 +1936,10 @@ const APP_STYLES = `
   .field { display: grid; gap: 7px; max-width: 420px; margin-top: 22px; color: #3c5148; font-size: 13px; font-weight: 750; }
   .field select, .transform-form select, .transform-form input, .mapping-grid select, .mapping-grid input, .inline-form select { width: 100%; min-height: 42px; padding: 8px 11px; border: 1px solid #c9d4cf; border-radius: 9px; color: #17251f; background: white; }
   .selection-note { color: #176b45; font-weight: 700; }
+  .base-mode-options { display: grid; gap: 10px; margin-bottom: 20px; padding: 18px; border: 1px solid #d7e1dc; border-radius: 14px; }
+  .base-mode-options legend { padding: 0 7px; color: #3c5148; font-weight: 800; }
+  .base-mode-options label { display: flex; align-items: center; gap: 9px; padding: 10px; border-radius: 9px; cursor: pointer; }
+  .base-mode-options label:has(input:checked) { color: #176b45; background: #f0f8f4; font-weight: 800; }
   .dataset-facts, .export-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 22px 0 0; }
   .dataset-facts div, .export-summary div { padding: 17px; border: 1px solid #dfE7e3; border-radius: 13px; background: #fbfcfb; }
   .dataset-facts dt, .export-summary dt { color: #708078; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }

@@ -9,6 +9,7 @@ import { listSourceSheets, readSource } from '../io/source/read-source';
 import { exportWorkbook, scanExportRisks } from '../io/template/export-workbook';
 import { extractDestinationDataset } from '../io/template/extract-destination';
 import { openOoxmlPackage } from '../io/template/ooxml-package';
+import { prepareOutputBase } from '../io/template/output-base';
 import { preparePackageForExport } from '../io/template/protection-sanitizer';
 import { indexWorkbook } from '../io/template/workbook-index';
 import {
@@ -185,6 +186,14 @@ async function dispatchRequest(
       );
       ensureNotCancelled(request.operationId);
       return { type: 'EXTRACT_DESTINATION', dataset };
+    }
+    case 'PREPARE_OUTPUT_BASE': {
+      ensureNotCancelled(request.operationId);
+      reportProgress(request.operationId, 0, 1, 'prepare-base');
+      const prepared = await prepareOutputBase(request);
+      ensureNotCancelled(request.operationId);
+      reportProgress(request.operationId, 1, 1, 'prepare-base');
+      return { type: 'PREPARE_OUTPUT_BASE', ...prepared };
     }
     case 'APPLY_TRANSFORMS': {
       let dataset = request.dataset;

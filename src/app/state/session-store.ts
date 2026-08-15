@@ -13,6 +13,7 @@ export interface SelectedSheets {
 }
 
 export type WriteMode = 'append' | 'replace';
+export type BaseMode = 'external' | 'source' | 'none';
 
 export type WorkflowStep =
   | 'source'
@@ -25,6 +26,7 @@ export type WorkflowStep =
   | 'export';
 
 export interface SessionState {
+  baseMode: BaseMode;
   sourceFileMetadata: FileMetadata | null;
   sourceFileBuffer: ArrayBuffer | null;
   selectedSheets: SelectedSheets;
@@ -46,6 +48,7 @@ export interface SessionStore {
 }
 
 export const initialSessionState: SessionState = {
+  baseMode: 'external',
   sourceFileMetadata: null,
   sourceFileBuffer: null,
   selectedSheets: { source: null, template: null },
