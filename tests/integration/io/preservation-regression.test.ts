@@ -27,18 +27,30 @@ beforeEach(async () => {
 });
 
 describe('export compatibility risks', () => {
-  it('blocks protected destinations before mutating the input package', async () => {
+  it('exports protected destinations without mutating the input package', async () => {
     const protectedInput = baseInput({
       sheetName: 'Protegida',
       range: 'A1:C4',
       dataStartRow: 2,
       templateRow: 4,
+      tablePath: undefined,
+      definedName: { name: 'EntradaProtegida', localSheetId: 1 },
       columns: [
         { id: 'target_id', column: 'A' },
         { id: 'target_product', column: 'B' },
       ],
     });
-    const before = pkg.readPart('xl/worksheets/sheet2.xml');
+    protectedInput.writePlan.headerRow = 1;
+    protectedInput.writePlan.inserts[0].destinationRow = 5;
+    pkg.updatePart(
+      'xl/workbook.xml',
+      textPart('xl/workbook.xml').replace(
+        '<sheets>',
+        '<workbookProtection lockStructure="1"/><sheets>',
+      ),
+    );
+    const originalWorkbookXml = textPart('xl/workbook.xml');
+    const originalSheetXml = textPart('xl/worksheets/sheet2.xml');
 
     const risks = await scanExportRisks(protectedInput);
 
@@ -46,13 +58,19 @@ describe('export compatibility risks', () => {
       code: 'protected-destination-sheet',
       severity: 'hard',
     }));
-    await expect(exportWorkbook(protectedInput)).rejects.toMatchObject({
-      name: 'ExportCompatibilityError',
-      risks: expect.arrayContaining([
-        expect.objectContaining({ code: 'protected-destination-sheet' }),
-      ]),
-    });
-    expect(pkg.readPart('xl/worksheets/sheet2.xml')).toEqual(before);
+    expect(risks).toContainEqual(expect.objectContaining({
+      code: 'protected-workbook',
+      severity: 'hard',
+    }));
+    const output = await exportWorkbook(protectedInput);
+    const exported = await openOoxmlPackage(await output.arrayBuffer());
+    const exportedWorkbookXml = new TextDecoder().decode(exported.readPart('xl/workbook.xml'));
+    const exportedSheetXml = new TextDecoder().decode(exported.readPart('xl/worksheets/sheet2.xml'));
+
+    expect(exportedWorkbookXml).not.toContain('<workbookProtection');
+    expect(exportedSheetXml).not.toContain('<sheetProtection');
+    expect(originalWorkbookXml).toContain('<workbookProtection');
+    expect(originalSheetXml).toContain('<sheetProtection');
   });
 
   it('blocks encrypted-package sentinels, merged write cells, and unknown table structures', async () => {

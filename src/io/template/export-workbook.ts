@@ -4,8 +4,9 @@ import type { WriteInsert, WritePlan, WriteUpdate } from '../../domain/merge/typ
 import type { ValidationResult } from '../../domain/validation/types';
 import { shiftFormulaA1 } from './formula-shift';
 import { expandDestination } from './model-expander';
-import { openOoxmlPackage, type OoxmlPackage } from './ooxml-package';
+import { type OoxmlPackage } from './ooxml-package';
 import { addRejectedSheet, type RejectedSheetRow } from './rejected-sheet';
+import { preparePackageForExport } from './protection-sanitizer';
 import type { DefinedNameIdentity } from './destination-detector';
 import { indexWorkbook, type WorksheetIndex } from './workbook-index';
 
@@ -179,9 +180,11 @@ export async function scanExportRisks(input: ExportInput): Promise<ExportRisk[]>
 }
 
 export async function exportWorkbook(input: ExportInput, options?: ExportBatchOptions): Promise<Blob> {
-  const risks = await scanExportRisks(input);
-  const reviewed = new Set(input.reviewedRiskCodes ?? []);
-  const reviewedIds = new Set(input.reviewedRiskIds ?? []);
+  const preparedPackage = await preparePackageForExport(input.package);
+  const preparedInput = { ...input, package: preparedPackage };
+  const risks = await scanExportRisks(preparedInput);
+  const reviewed = new Set(preparedInput.reviewedRiskCodes ?? []);
+  const reviewedIds = new Set(preparedInput.reviewedRiskIds ?? []);
   const blockers = risks.filter(
     (risk) => risk.severity === 'hard'
       || (!reviewed.has(risk.code) && !reviewedIds.has(exportRiskIdentifier(risk))),
@@ -190,21 +193,21 @@ export async function exportWorkbook(input: ExportInput, options?: ExportBatchOp
     throw new ExportCompatibilityError(blockers);
   }
 
-  const working = await openOoxmlPackage(await input.package.emit());
+  const working = preparedInput.package;
   const index = await indexWorkbook(working);
-  const sheet = requireSheet(index.sheets, input.destination.sheetName);
-  const invalidRowIds = validationErrorRowIds(input.validationResult);
-  const writeActions = validWriteActions(input.writePlan, invalidRowIds);
+  const sheet = requireSheet(index.sheets, preparedInput.destination.sheetName);
+  const invalidRowIds = validationErrorRowIds(preparedInput.validationResult);
+  const writeActions = validWriteActions(preparedInput.writePlan, invalidRowIds);
   const maxDestinationRow = Math.max(
-    input.destination.dataStartRow - 1,
+    preparedInput.destination.dataStartRow - 1,
     ...writeActions.map(({ destinationRow }) => destinationRow),
   );
-  const destinationRange = parseRange(input.destination.range);
+  const destinationRange = parseRange(preparedInput.destination.range);
   const expansionRows = Math.max(0, maxDestinationRow - destinationRange.endRow);
-  const writeRows = input.writePlan.clears.length
-    + input.writePlan.inserts.length
-    + input.writePlan.updates.length;
-  const rejectedRows = input.rejectedRows?.length ?? 0;
+  const writeRows = preparedInput.writePlan.clears.length
+    + preparedInput.writePlan.inserts.length
+    + preparedInput.writePlan.updates.length;
+  const rejectedRows = preparedInput.rejectedRows?.length ?? 0;
   const totalWorkRows = expansionRows + writeRows + rejectedRows;
 
   if (options) assertExportBatchSize(options.batchSize);
@@ -222,25 +225,25 @@ export async function exportWorkbook(input: ExportInput, options?: ExportBatchOp
 
   await expandDestination(working, {
     worksheetPath: sheet.path,
-    destinationRange: input.destination.range,
-    dataStartRow: input.destination.dataStartRow,
-    templateRow: input.destination.templateRow,
+    destinationRange: preparedInput.destination.range,
+    dataStartRow: preparedInput.destination.dataStartRow,
+    templateRow: preparedInput.destination.templateRow,
     requiredDataRows: Math.max(
       1,
-      maxDestinationRow - input.destination.dataStartRow + 1,
+      maxDestinationRow - preparedInput.destination.dataStartRow + 1,
     ),
-    ...(input.destination.tablePath ? { tablePath: input.destination.tablePath } : {}),
+    ...(preparedInput.destination.tablePath ? { tablePath: preparedInput.destination.tablePath } : {}),
   }, options && {
     batchSize: options.batchSize,
     onProgress: ({ completed }) => reportProgress?.('expansion', completed),
   });
 
   const targetLastRow = Math.max(destinationRange.endRow, maxDestinationRow);
-  if (input.destination.definedName && targetLastRow > destinationRange.endRow) {
+  if (preparedInput.destination.definedName && targetLastRow > destinationRange.endRow) {
     updateDefinedName(
       working,
       index.workbookPath,
-      input.destination.definedName,
+      preparedInput.destination.definedName,
       targetLastRow,
     );
   }
@@ -250,8 +253,8 @@ export async function exportWorkbook(input: ExportInput, options?: ExportBatchOp
     sheet.path,
     await applyWritePlan(
       worksheet,
-      input,
-      resolveMappings(input),
+      preparedInput,
+      resolveMappings(preparedInput),
       invalidRowIds,
       options && {
         batchSize: options.batchSize,
@@ -260,8 +263,8 @@ export async function exportWorkbook(input: ExportInput, options?: ExportBatchOp
     ),
   );
 
-  if ((input.rejectedRows?.length ?? 0) > 0) {
-    await addRejectedSheet(working, input.rejectedRows ?? [], options && {
+  if ((preparedInput.rejectedRows?.length ?? 0) > 0) {
+    await addRejectedSheet(working, preparedInput.rejectedRows ?? [], options && {
       batchSize: options.batchSize,
       onProgress: ({ completed }) => reportProgress?.('rejected', completed),
     });
