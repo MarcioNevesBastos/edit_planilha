@@ -370,6 +370,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   const [writeMode, setWriteMode] = useState<WriteMode>('replace');
   const [keyColumnIds, setKeyColumnIds] = useState<string[]>([]);
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
+  const [exportValidationErrors, setExportValidationErrors] = useState<boolean | null>(null);
   const [includeValidationWarnings, setIncludeValidationWarnings] = useState<boolean | null>(null);
   const [writePlan, setWritePlan] = useState<WritePlan | null>(null);
   const [writePlanFingerprintValue, setWritePlanFingerprintValue] = useState<string | null>(null);
@@ -405,6 +406,15 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   ), [datasetRevision, keyColumnIds, mappings, validationResult, writeMode]);
   const currentWritePlan = writePlanFingerprintValue === currentPlanFingerprint ? writePlan : null;
   const currentExportRisks = riskFingerprint === currentPlanFingerprint ? exportRisks : null;
+  const validationErrorCount = useMemo(() => new Set(
+    validationResult?.issues
+      .filter(({ severity }) => (severity ?? 'error') === 'error')
+      .map(({ rowId }) => rowId) ?? [],
+  ).size, [validationResult]);
+
+  useEffect(() => {
+    setExportValidationErrors(null);
+  }, [currentPlanFingerprint]);
   const duplicateMappings = useMemo(() => duplicateDestinationIds(mappings), [mappings]);
   const acceptedMappedColumns = useMemo(() => acceptedMappedSourceIds(mappings), [mappings]);
   const availableKeyColumns = useMemo(
@@ -758,6 +768,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
       onResult: (result) => {
         if (result.type !== 'VALIDATE') return;
         setValidationResult(result.validationResult);
+        setExportValidationErrors(null);
         setIncludeValidationWarnings(null);
         setWritePlan(null);
         setExported(false);
@@ -788,6 +799,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         setWritePlan(result.writePlan);
         setWritePlanFingerprintValue(fingerprint);
         setExportRisks(null);
+        setExportValidationErrors(null);
         setRiskFingerprint(null);
         setReviewedRiskIds([]);
         setExported(false);
@@ -823,6 +835,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
       onResult: (result) => {
         if (result.type !== 'EXPORT_RISKS') return;
         setExportRisks(result.risks);
+        setExportValidationErrors(null);
         setRiskFingerprint(fingerprint);
         setReviewedRiskIds([]);
         setStepIndex(9);
@@ -834,6 +847,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   const exportWorkbook = useCallback(() => {
     if (!currentWritePlan || !session.templateFileBuffer) return;
     if (includeValidationWarnings === null) return;
+    if (validationErrorCount > 0 && exportValidationErrors !== true) return;
     const input = exportInput(currentWritePlan, reviewedRiskIds, includeValidationWarnings);
     if (!input) return;
     const id = operationId('export');
@@ -857,7 +871,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         setExported(true);
       },
     });
-  }, [currentWritePlan, exportInput, includeValidationWarnings, operationId, reviewedRiskIds, runOperation, session.templateFileBuffer]);
+  }, [currentWritePlan, exportInput, exportValidationErrors, includeValidationWarnings, operationId, reviewedRiskIds, runOperation, session.templateFileBuffer, validationErrorCount]);
 
   const canAdvance = useMemo(() => {
     switch (stepIndex) {
@@ -926,6 +940,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
             setSelectedDestination(null);
             setTemplateDataset(null);
             setValidationResult(null);
+            setExportValidationErrors(null);
             setWritePlan(null);
             setWritePlanFingerprintValue(null);
             setDatasetRevision(0);
@@ -1209,6 +1224,34 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
                   })}
                 </section>
               ) : null}
+              {validationErrorCount > 0 ? (
+                <fieldset className="validation-export-choice">
+                  <legend>
+                    {validationErrorCount === 1
+                      ? '1 registro com erro de validação. Deseja exportar somente os registros sem erro?'
+                      : `${validationErrorCount} registros com erro de validação. Deseja exportar somente os registros sem erro?`}
+                  </legend>
+                  <label>
+                    <input
+                      type="radio"
+                      name="export-validation-errors"
+                      checked={exportValidationErrors === false}
+                      onChange={() => setExportValidationErrors(false)}
+                    />
+                    Não, não exportar
+                  </label>
+                  <label>
+                    <input
+                      type="radio"
+                      name="export-validation-errors"
+                      checked={exportValidationErrors === true}
+                      onChange={() => setExportValidationErrors(true)}
+                    />
+                    Sim, exportar somente registros sem erro
+                  </label>
+                  <p className="selection-note">Os registros com erro serão adicionados à aba “Registros rejeitados”.</p>
+                </fieldset>
+              ) : null}
               <fieldset className="warning-export-choice">
                 <legend>Incluir avisos no relatório de rejeitados?</legend>
                 <label>
@@ -1238,6 +1281,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
                   || !validationResult
                   || currentExportRisks === null
                   || includeValidationWarnings === null
+                  || (validationErrorCount > 0 && exportValidationErrors !== true)
                   || currentExportRisks.some((risk) => risk.severity === 'hard')
                   || currentExportRisks.some((risk) => risk.severity === 'soft'
                     && !reviewedRiskIds.includes(exportRiskIdentifier(risk)))}
@@ -1782,9 +1826,9 @@ const APP_STYLES = `
   .conditional-matrix-table select, .conditional-matrix-table input { width: 100%; min-height: 34px; margin-bottom: 5px; padding: 6px 8px; border: 1px solid #c9d4cf; border-radius: 7px; color: #17251f; background: white; font-size: 12px; }
   .conditional-matrix-table td:last-child { min-width: 92px; }
   .matrix-range-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
-  .warning-export-choice { display: grid; gap: 8px; margin: 18px 0; padding: 13px; border: 1px solid #dce6e0; border-radius: 10px; color: #4f6259; }
-  .warning-export-choice legend { padding: 0 5px; font-size: 12px; font-weight: 800; }
-  .warning-export-choice label { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+  .validation-export-choice, .warning-export-choice { display: grid; gap: 8px; margin: 18px 0; padding: 13px; border: 1px solid #dce6e0; border-radius: 10px; color: #4f6259; }
+  .validation-export-choice legend, .warning-export-choice legend { padding: 0 5px; font-size: 12px; font-weight: 800; }
+  .validation-export-choice label, .warning-export-choice label { display: flex; gap: 8px; align-items: center; font-size: 12px; }
   .data-grid-shell { overflow: hidden; border: 1px solid #d8e1dc; border-radius: 14px; }
   .grid-toolbar { display: flex; justify-content: space-between; padding: 11px 14px; color: #52655c; background: #f5f8f6; font-size: 12px; font-weight: 700; }
   .grid-toolbar label { display: flex; gap: 8px; }

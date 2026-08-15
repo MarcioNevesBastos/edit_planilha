@@ -14,6 +14,7 @@ import { applyTransform } from '../../../src/domain/transforms/apply-transform';
 import type { Dataset } from '../../../src/domain/dataset/types';
 import { planWrite } from '../../../src/domain/merge/plan-write';
 import { validateDataset } from '../../../src/domain/validation/validate-row';
+import type { ValidationResult } from '../../../src/domain/validation/types';
 import type {
   WorkerInboundMessage,
   WorkerRequest,
@@ -92,7 +93,10 @@ class FakeWorker implements WorkflowWorker {
   public onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null = null;
   public readonly requests: WorkerRequest[] = [];
 
-  public constructor(private readonly exportRisks: ExportRisk[] = []) {}
+  public constructor(
+    private readonly exportRisks: ExportRisk[] = [],
+    private readonly validationResult: ValidationResult | null = null,
+  ) {}
 
   public postMessage(message: WorkerInboundMessage): void {
     if (message.type === 'CANCEL_OPERATION') {
@@ -132,7 +136,7 @@ class FakeWorker implements WorkflowWorker {
         case 'VALIDATE':
           return {
             type: 'VALIDATE' as const,
-            validationResult: validateDataset(message.dataset, message.rules),
+            validationResult: this.validationResult ?? validateDataset(message.dataset, message.rules),
           };
         case 'PLAN_WRITE':
           return { type: 'PLAN_WRITE' as const, writePlan: planWrite(message.input) };
@@ -652,6 +656,45 @@ describe('mapping and summary invariants', () => {
 });
 
 describe('final export safeguards', () => {
+  it('requires an explicit decision before exporting when validation errors exist', async () => {
+    const user = userEvent.setup();
+    const worker = new FakeWorker([], {
+      isValid: false,
+      issues: [{
+        rowId: 'source-2',
+        sourceRowNumber: 2,
+        columnId: 'id__1',
+        code: 'required',
+        value: null,
+        message: 'ID obrigatório',
+      }],
+    });
+    render(<App workerFactory={() => worker} />);
+
+    await prepareSummary(user);
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+
+    expect(await screen.findByText(/1 registro com erro de validação/)).toBeInTheDocument();
+    expect(screen.getByText('Os registros com erro serão adicionados à aba “Registros rejeitados”.')).toBeInTheDocument();
+    const exportButton = screen.getByRole('button', { name: 'Exportar .xlsx' });
+    expect(exportButton).toBeDisabled();
+    expect(screen.getByRole('radio', { name: 'Sim, exportar somente registros sem erro' })).not.toBeChecked();
+
+    await user.click(screen.getByRole('radio', { name: 'Não, não exportar' }));
+    expect(exportButton).toBeDisabled();
+    expect(worker.requests.some(({ type }) => type === 'EXPORT')).toBe(false);
+
+    await user.click(screen.getByRole('radio', { name: 'Sim, exportar somente registros sem erro' }));
+    await user.click(screen.getByRole('radio', { name: 'Não, somente erros' }));
+    expect(exportButton).toBeEnabled();
+
+    await user.click(screen.getByRole('button', { name: 'Resumo' }));
+    await user.click(screen.getByRole('button', { name: 'Avançar' }));
+    expect(await screen.findByText(/1 registro com erro de validação/)).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Sim, exportar somente registros sem erro' })).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Exportar .xlsx' })).toBeDisabled();
+  });
+
   it('uses one fixed-value dataset for validation and write planning', async () => {
     const user = userEvent.setup();
     const worker = new FakeWorker();
