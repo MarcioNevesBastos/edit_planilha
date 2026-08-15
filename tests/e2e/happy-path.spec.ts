@@ -39,6 +39,15 @@ test('imports, transforms, validates, replaces, and exports an xlsx workbook', a
   await page.getByRole('button', { name: 'Avançar' }).click();
 
   await expect(page.getByRole('region', { name: 'Prévia dos dados' })).toBeVisible();
+  const previewTabs = page.getByRole('tablist', { name: 'Filtrar linhas por status' });
+  await expect(previewTabs).toBeVisible();
+  await expect(previewTabs.getByRole('tab', { name: /Todas/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(previewTabs.getByRole('tab', { name: /Com erro/ })).toBeVisible();
+  await expect(previewTabs.getByRole('tab', { name: /Válidas/ })).toBeVisible();
+  await expect(page.getByText('linhas com erro')).toBeVisible();
+  await expect(page.getByText('linhas válidas')).toBeVisible();
+  await previewTabs.getByRole('tab', { name: /Válidas/ }).click();
+  await expect(previewTabs.getByRole('tab', { name: /Válidas/ })).toHaveAttribute('aria-selected', 'true');
   await page.getByRole('button', { name: 'Avançar' }).click();
 
   await page.getByLabel(/Substituir/).check();

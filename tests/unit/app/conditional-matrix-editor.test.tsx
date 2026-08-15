@@ -165,4 +165,28 @@ describe('ConditionalMatrixEditor', () => {
 
     expect(screen.getByText('Nenhuma linha configurada.')).toBeInTheDocument();
   });
+
+  it('edita metadados, política de não correspondência e exibe a prévia', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<ConditionalMatrixEditor
+      dataset={dataset}
+      columns={dataset.columns}
+      rule={{ ...rule, name: 'Contexto obrigatório', entries: [{ conditions: { context__1: { operator: 'equals', value: 'A' } }, constraints: { value__1: { type: 'required' } } }] }}
+      disabled={false}
+      onChange={onChange}
+    />);
+
+    await user.clear(screen.getByLabelText('Nome da matriz'));
+    await user.type(screen.getByLabelText('Nome da matriz'), 'Matriz de contexto');
+    await user.selectOptions(screen.getByLabelText('Severidade da matriz'), 'error');
+    await user.selectOptions(screen.getByLabelText('Quando não houver correspondência'), 'ignore');
+
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      name: 'Matriz de contexto',
+      severity: 'error',
+      noMatchBehavior: 'ignore',
+    }));
+    expect(screen.getByText('2 linha(s) correspondem à prévia.')).toBeInTheDocument();
+  });
 });

@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { CellValue, Dataset, DatasetColumn } from '../../domain/dataset/types';
 import { distinctMatrixEntries, validateConditionalMatrixRule } from '../../domain/validation/matrix';
+import { matchesConditionalMatrixEntry } from '../../domain/validation/validate-row';
 import { SearchableMatrixEntries } from './SearchableMatrixEntries';
 import type {
   ConditionalConstraint,
@@ -91,9 +92,16 @@ export function ConditionalMatrixEditor({
   disabled,
   onChange,
 }: ConditionalMatrixEditorProps) {
+  const [name, setName] = useState(rule.name ?? '');
+  const [severity, setSeverity] = useState<'error' | 'warning'>(rule.severity ?? 'warning');
+  const [noMatchBehavior, setNoMatchBehavior] = useState<'warning' | 'error' | 'ignore'>(rule.noMatchBehavior ?? 'warning');
+  useEffect(() => setName(rule.name ?? ''), [rule.name]);
+  useEffect(() => setSeverity(rule.severity ?? 'warning'), [rule.severity]);
+  useEffect(() => setNoMatchBehavior(rule.noMatchBehavior ?? 'warning'), [rule.noMatchBehavior]);
   const columnById = new Map(columns.map((column) => [column.id, column]));
   const errors = validateConditionalMatrixRule(rule, columns.map(({ id }) => id));
   const conflictErrors = errors.filter((error) => error.includes('entram em conflito'));
+  const previewCount = useMemo(() => dataset.rows.filter((row) => rule.entries.some((entry) => matchesConditionalMatrixEntry(row, rule, entry))).length, [dataset.rows, rule]);
 
   const updateEntry = (entryIndex: number, update: (entry: ConditionalMatrixEntry) => ConditionalMatrixEntry) => {
     onChange({ ...rule, entries: rule.entries.map((entry, index) => index === entryIndex ? update(entry) : entry) });
@@ -124,6 +132,28 @@ export function ConditionalMatrixEditor({
 
   return (
     <section className="conditional-matrix-editor" aria-label="Editor de matriz condicional">
+      <div className="matrix-meta-fields">
+        <label>Nome da matriz
+          <input aria-label="Nome da matriz" value={name} disabled={disabled} onChange={(event) => {
+            const nextName = event.currentTarget.value;
+            setName(nextName);
+            onChange({ ...rule, name: nextName });
+          }} />
+        </label>
+        <label>Severidade da matriz
+          <select aria-label="Severidade da matriz" value={severity} disabled={disabled} onChange={(event) => { const next = event.currentTarget.value as 'error' | 'warning'; setSeverity(next); onChange({ ...rule, name, severity: next }); }}>
+            <option value="error">Erro</option>
+            <option value="warning">Aviso</option>
+          </select>
+        </label>
+        <label>Quando não houver correspondência
+          <select aria-label="Quando não houver correspondência" value={noMatchBehavior} disabled={disabled} onChange={(event) => { const next = event.currentTarget.value as 'warning' | 'error' | 'ignore'; setNoMatchBehavior(next); onChange({ ...rule, name, severity, noMatchBehavior: next }); }}>
+            <option value="warning">Avisar</option>
+            <option value="error">Bloquear</option>
+            <option value="ignore">Ignorar</option>
+          </select>
+        </label>
+      </div>
       <div className="matrix-toolbar">
         <div>
           <strong>Relacionar colunas</strong>
@@ -243,6 +273,7 @@ export function ConditionalMatrixEditor({
         )}
       />
       <p className="selection-note">{rule.entries.length} linha(s) configurada(s).</p>
+      <p className="selection-note">{previewCount} linha(s) correspondem à prévia.</p>
     </section>
   );
 }

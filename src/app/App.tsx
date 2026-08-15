@@ -16,6 +16,7 @@ import type { Expression, FilterOperator, TransformCommand, TransformConditionNo
 import { detectDateFormats, detectDecimalSeparator, getSuggestedDelimiters } from '../domain/transforms/transform-values';
 import { validateDataset } from '../domain/validation/validate-row';
 import { validateConditionalMatrixRule } from '../domain/validation/matrix';
+import { validationRuleColumnIds } from '../domain/validation/rule-analysis';
 import type { ValidationIssue, ValidationResult, ValidationRule } from '../domain/validation/types';
 import {
   destinationDetectionWarnings,
@@ -29,6 +30,7 @@ import {
 } from '../io/template/export-workbook';
 import type { RejectedSheetRow } from '../io/template/rejected-sheet';
 import type { WorkbookIndex } from '../io/template/workbook-index';
+import { getValidationErrorRowIds } from './export-row-status';
 import {
   transferablesForRequest,
   type WorkerInboundMessage,
@@ -36,8 +38,8 @@ import {
   type WorkerResponse,
   type WorkerResult,
 } from '../workers/protocol';
-import { DataGrid } from './components/DataGrid';
-import { ExportSummary } from './components/ExportSummary';
+import { DataGrid, type DataGridFilters } from './components/DataGrid';
+import { ExportLineCounts, ExportSummary } from './components/ExportSummary';
 import { FileDrop } from './components/FileDrop';
 import {
   MappingGrid,
@@ -75,6 +77,12 @@ const STEP_DESCRIPTIONS = [
   'Confira as contagens exatas antes da exportação.',
   'Gere uma nova planilha .xlsx localmente.',
 ] as const;
+
+const INITIAL_PREVIEW_FILTERS: DataGridFilters = {
+  view: 'all',
+  issueRule: 'all',
+  issueSeverity: 'all',
+};
 
 const TRANSFORM_LABELS: Record<TransformCommand['type'], string> = {
   reorderColumns: 'Reordenar colunas',
@@ -244,8 +252,7 @@ function validationRuleUsesOnlyColumns(rule: ValidationRule, columnIds: Readonly
       && rule.entries.every((entry) => Object.keys(entry.conditions).every((columnId) => columnIds.has(columnId))
         && Object.keys(entry.constraints).every((columnId) => columnIds.has(columnId)));
   }
-  if (rule.type === 'compositeUnique') return rule.columnIds.every((columnId) => columnIds.has(columnId));
-  return columnIds.has(rule.columnId);
+  return validationRuleColumnIds(rule).every((columnId) => columnIds.has(columnId));
 }
 
 function duplicateDestinationIds(mappings: readonly ReviewedMapping[]): Set<string> {
@@ -416,6 +423,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   const [riskFingerprint, setRiskFingerprint] = useState<string | null>(null);
   const [reviewedRiskIds, setReviewedRiskIds] = useState<string[]>([]);
   const [focusTarget, setFocusTarget] = useState<{ rowId: string; columnId: string } | null>(null);
+  const [previewFilters, setPreviewFilters] = useState<DataGridFilters>(INITIAL_PREVIEW_FILTERS);
   const [activeOperation, setActiveOperation] = useState<ActiveOperation | null>(null);
   const [preflightBusy, setPreflightBusy] = useState(false);
   const workflowBusy = activeOperation !== null || preflightBusy;
@@ -451,11 +459,10 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   const currentExportRisks = riskFingerprint === currentPlanFingerprint ? exportRisks : null;
   const activeTemplateBuffer = automaticMode ? preparedOutput?.buffer ?? null : session.templateFileBuffer;
   const activeTemplateIndex = automaticMode ? preparedOutput?.index ?? null : templateIndex;
-  const validationErrorCount = useMemo(() => new Set(
-    validationResult?.issues
-      .filter(({ severity }) => (severity ?? 'error') === 'error')
-      .map(({ rowId }) => rowId) ?? [],
-  ).size, [validationResult]);
+  const validationErrorCount = useMemo(
+    () => getValidationErrorRowIds(validationResult?.issues ?? []).size,
+    [validationResult],
+  );
 
   useEffect(() => {
     setExportValidationErrors(null);
@@ -1100,6 +1107,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
             setExportRisks(null);
             setRiskFingerprint(null);
             setReviewedRiskIds([]);
+            setPreviewFilters(INITIAL_PREVIEW_FILTERS);
             setExported(false);
             commandHistory.current = { past: [], future: [] };
           }}
@@ -1325,6 +1333,8 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
             <DataGrid
               dataset={session.dataset}
               issues={validationResult?.issues ?? []}
+              filters={previewFilters}
+              onFiltersChange={setPreviewFilters}
               focusTarget={focusTarget}
               busy={workflowBusy}
               onEdit={editCell}
@@ -1381,9 +1391,9 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
             </div>
           ) : null}
 
-          {stepIndex === 8 && currentWritePlan ? (
+          {stepIndex === 8 && currentWritePlan && session.dataset ? (
             <>
-              <ExportSummary plan={currentWritePlan} validationIssues={validationResult?.issues ?? []} />
+              <ExportSummary dataset={session.dataset} plan={currentWritePlan} validationIssues={validationResult?.issues ?? []} />
               <p className="summary-note">Modo selecionado: <strong>{writeMode === 'replace' ? 'Substituir' : writeMode === 'append' ? 'Acrescentar' : 'Atualizar'}</strong></p>
             </>
           ) : null}
@@ -1393,6 +1403,9 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
               <div className="export-icon" aria-hidden="true">XLSX</div>
               <h3>{exported ? 'Arquivo exportado' : 'Tudo pronto para exportar'}</h3>
               <p>O processamento acontece no navegador e a base original não será alterada.</p>
+              {session.dataset && validationResult ? (
+                <ExportLineCounts dataset={session.dataset} plan={currentWritePlan ?? undefined} validationIssues={validationResult.issues} />
+              ) : null}
               {currentExportRisks ? (
                 <section className="risk-list" aria-label="Riscos de exportação">
                   {currentExportRisks.length === 0 ? <p>Nenhum risco de compatibilidade detectado.</p> : null}
@@ -1999,6 +2012,28 @@ const APP_STYLES = `
   .command-stack li > span { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; color: #176b45; background: #e6f2eb; font-size: 11px; font-weight: 850; }
   .command-stack li div { display: flex; gap: 5px; }
   .validation-layout { grid-template-columns: 1fr 1fr; }
+  .validation-rule-table-section { grid-column: 1 / -1; display: grid; gap: 14px; }
+  .validation-table-heading { display: flex; align-items: start; gap: 12px; }
+  .validation-table-heading > div { margin-right: auto; }
+  .validation-table-heading h3 { margin-bottom: 5px; }
+  .validation-table-filters, .matrix-meta-fields { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(160px, .5fr); gap: 10px; }
+  .validation-table-filters label, .matrix-meta-fields label, .validation-rule-editor label, .validation-expression-operand label, .validation-expression-node label { display: grid; gap: 5px; color: #4f6259; font-size: 12px; font-weight: 750; }
+  .validation-table-filters input, .validation-table-filters select, .matrix-meta-fields input, .matrix-meta-fields select, .validation-rule-editor input, .validation-rule-editor select, .validation-expression-node select, .validation-expression-operand input, .validation-expression-operand select { min-height: 34px; padding: 6px 8px; border: 1px solid #c9d4cf; border-radius: 7px; color: #17251f; background: white; font-size: 12px; }
+  .validation-rule-table-scroll { overflow-x: auto; border: 1px solid #dce6e0; border-radius: 10px; background: white; }
+  .validation-rule-table { width: 100%; min-width: 880px; border-collapse: collapse; text-align: left; font-size: 12px; }
+  .validation-rule-table th, .validation-rule-table td { padding: 10px; border-bottom: 1px solid #e8eeeb; vertical-align: top; }
+  .validation-rule-table th { color: #6c7a73; background: #f5f8f6; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
+  .validation-rule-table td:last-child { white-space: nowrap; }
+  .validation-rule-table td button { min-height: 30px; margin-right: 5px; padding: 5px 8px; border: 1px solid #cbd5d0; color: #355146; background: white; }
+  .validation-rule-editor { display: grid; gap: 12px; padding: 16px; border: 1px solid #c9ddd1; border-radius: 11px; background: #f7fbf8; }
+  .validation-range-fields, .validation-comparison-fields, .validation-reference-fields, .validation-expression-children { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .validation-comparison-fields { grid-template-columns: repeat(4, minmax(150px, 1fr)); }
+  .validation-expression-node, .validation-expression-operand { display: grid; gap: 10px; padding: 12px; border: 1px solid #d5e1da; border-radius: 10px; background: white; }
+  .validation-expression-node legend, .validation-expression-operand legend { padding: 0 5px; color: #3d5f4e; font-size: 12px; font-weight: 800; }
+  .validation-expression-builder { display: grid; gap: 8px; }
+  .validation-editor-actions { display: flex; gap: 8px; }
+  .validation-impact-summary { display: flex; flex-wrap: wrap; gap: 14px; padding: 11px 13px; border-radius: 9px; color: #52655c; background: #eff6f2; font-size: 12px; }
+  .matrix-meta-fields { grid-template-columns: minmax(220px, 1.5fr) minmax(140px, .5fr) minmax(220px, 1fr); }
   .panel-section ul { padding-left: 20px; color: #52655c; }
   .panel-section li { margin: 8px 0; }
   .inline-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-top: 14px; align-items: end; }
@@ -2035,8 +2070,17 @@ const APP_STYLES = `
   .validation-export-choice legend, .warning-export-choice legend { padding: 0 5px; font-size: 12px; font-weight: 800; }
   .validation-export-choice label, .warning-export-choice label { display: flex; gap: 8px; align-items: center; font-size: 12px; }
   .data-grid-shell { overflow: hidden; border: 1px solid #d8e1dc; border-radius: 14px; }
-  .grid-toolbar { display: flex; justify-content: space-between; padding: 11px 14px; color: #52655c; background: #f5f8f6; font-size: 12px; font-weight: 700; }
-  .grid-toolbar label { display: flex; gap: 8px; }
+  .grid-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; justify-content: space-between; padding: 11px 14px; color: #52655c; background: #f5f8f6; font-size: 12px; font-weight: 700; }
+  .grid-view-tabs { display: flex; flex-wrap: wrap; gap: 4px; align-self: stretch; }
+  .grid-view-tabs button { min-height: 30px; padding: 5px 9px; border: 1px solid transparent; border-radius: 7px; color: #52655c; background: transparent; font-size: 11px; font-weight: 800; }
+  .grid-view-tabs button[aria-selected="true"] { border-color: #176b45; color: white; background: #176b45; }
+  .grid-view-tabs button:disabled { cursor: not-allowed; opacity: .6; }
+  .grid-view-tabs span { margin-left: 3px; opacity: .78; }
+  .grid-row-counts { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; color: #65766e; font-size: 11px; font-weight: 700; }
+  .grid-row-counts span { padding: 5px 7px; border-radius: 6px; background: white; }
+  .grid-row-counts strong { color: #173e2c; }
+  .grid-toolbar label { display: grid; gap: 4px; }
+  .grid-toolbar select { min-height: 30px; padding: 4px 7px; border: 1px solid #c9d4cf; border-radius: 6px; color: #355146; background: white; font-size: 11px; }
   .data-grid-header, .data-grid-row { display: grid; }
   .data-grid-header { overflow: hidden; color: #44574e; background: #eaf0ed; font-size: 11px; font-weight: 850; }
   .data-grid-header > div, .data-grid-row > div { min-width: 0; padding: 10px; border-right: 1px solid #dde5e1; }
@@ -2057,6 +2101,12 @@ const APP_STYLES = `
   .key-columns label { display: flex; gap: 6px; }
   .export-summary { grid-template-columns: repeat(5, 1fr); }
   .export-summary dd { font-size: 28px; }
+  .export-line-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; width: 100%; margin: 4px 0 18px; text-align: left; }
+  .export-line-counts div { padding: 14px; border: 1px solid #dfe7e3; border-radius: 11px; background: #fbfcfb; }
+  .export-line-counts dt { color: #65766e; font-size: 10px; font-weight: 850; letter-spacing: .06em; text-transform: uppercase; }
+  .export-line-counts dd { margin: 5px 0 2px; color: #173e2c; font-size: 25px; font-weight: 850; }
+  .export-line-counts small { color: #708078; font-size: 11px; }
+  .grid-empty { margin: 0; padding: 28px; color: #708078; text-align: center; }
   .summary-note { margin-top: 18px; color: #66766e; }
   .export-panel { display: grid; justify-items: center; padding: 28px; text-align: center; }
   .export-icon { display: grid; place-items: center; width: 76px; height: 76px; border-radius: 22px; color: white; background: #176b45; font-size: 13px; font-weight: 900; letter-spacing: .08em; box-shadow: 0 14px 30px #176b4538; }
@@ -2077,7 +2127,7 @@ const APP_STYLES = `
     .transform-layout, .validation-layout { grid-template-columns: 1fr; }
     .validation-run, .issue-list { grid-column: 1; }
     .write-mode-grid { grid-template-columns: 1fr; } .key-columns { grid-column: 1; }
-    .export-summary { grid-template-columns: repeat(2, 1fr); }
+    .export-summary, .export-line-counts { grid-template-columns: repeat(2, 1fr); }
     .operation-panel { grid-template-columns: 1fr auto; } .operation-panel progress { grid-column: 1 / -1; order: 3; }
   }
   @media (max-width: 560px) {
@@ -2090,6 +2140,8 @@ const APP_STYLES = `
     .matrix-column-picker { grid-template-columns: 1fr; }
     .matrix-entry-search { grid-template-columns: 1fr; }
     .matrix-entry-search > span { padding-bottom: 0; }
+    .grid-row-counts { width: 100%; order: 3; }
+    .export-line-counts { grid-template-columns: 1fr; }
     .matrix-toolbar { align-items: flex-start; flex-direction: column; }
     .matrix-toolbar > div:first-child { margin-right: 0; }
     .workflow-footer { position: sticky; bottom: 0; z-index: 3; }

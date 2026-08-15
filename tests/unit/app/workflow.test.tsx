@@ -643,6 +643,7 @@ describe('mapping and summary invariants', () => {
 
   it('counts effective actions and distinct rejected rows', () => {
     render(<ExportSummary
+      dataset={sourceDataset}
       plan={{
         mode: 'update',
         headerRow: 2,
@@ -669,6 +670,9 @@ describe('mapping and summary invariants', () => {
     expect(within(screen.getByText('Mantidos').parentElement as HTMLElement).getByText('1')).toBeInTheDocument();
     expect(within(screen.getByText('Duplicados').parentElement as HTMLElement).getByText('1')).toBeInTheDocument();
     expect(within(screen.getByText('Rejeitados').parentElement as HTMLElement).getByText('3')).toBeInTheDocument();
+    expect(screen.getByText('Linhas válidas')).toBeInTheDocument();
+    expect(within(screen.getByText('Linhas válidas').parentElement as HTMLElement).getByText('3')).toBeInTheDocument();
+    expect(within(screen.getByText('Linhas com erro/rejeitadas').parentElement as HTMLElement).getByText('3')).toBeInTheDocument();
   });
 
   it('builds rejection rows from validation and planner rejections with original values', () => {
@@ -726,6 +730,19 @@ describe('mapping and summary invariants', () => {
     expect(buildRejectedRows(sourceDataset, validation, plan)).toEqual([]);
     expect(buildRejectedRows(sourceDataset, validation, plan, true)).toHaveLength(1);
   });
+
+  it('preserves preview tabs when navigating between workflow steps', async () => {
+    const user = userEvent.setup();
+    render(<App workerFactory={() => new FakeWorker()} />);
+
+    await prepareSummary(user);
+    await user.click(screen.getByRole('button', { name: 'Prévia' }));
+    await user.click(screen.getByRole('tab', { name: /Válidas/ }));
+    await user.click(screen.getByRole('button', { name: 'Resumo' }));
+    await user.click(screen.getByRole('button', { name: 'Prévia' }));
+
+    expect(screen.getByRole('tab', { name: /Válidas/ })).toHaveAttribute('aria-selected', 'true');
+  });
 });
 
 describe('final export safeguards', () => {
@@ -748,6 +765,8 @@ describe('final export safeguards', () => {
     await user.click(screen.getByRole('button', { name: 'Avançar' }));
 
     expect(await screen.findByText(/1 registro com erro de validação/)).toBeInTheDocument();
+    expect(within(screen.getByText('Linhas válidas').parentElement as HTMLElement).getByText('1')).toBeInTheDocument();
+    expect(within(screen.getByText('Linhas com erro/rejeitadas').parentElement as HTMLElement).getByText('1')).toBeInTheDocument();
     expect(screen.getByText('Os registros com erro serão adicionados à aba “Registros rejeitados”.')).toBeInTheDocument();
     const exportButton = screen.getByRole('button', { name: 'Exportar .xlsx' });
     expect(exportButton).toBeDisabled();
@@ -909,7 +928,7 @@ describe('virtualized preview grid', () => {
     />);
 
     expect(screen.getAllByRole('row').length).toBeLessThan(30);
-    fireEvent.click(screen.getByLabelText('Mostrar somente erros'));
+    fireEvent.click(screen.getByRole('tab', { name: /Com erro/ }));
     const input = await screen.findByDisplayValue('Pessoa 150');
     const errorRow = input.closest('[role="row"]');
     expect(errorRow).not.toBeNull();

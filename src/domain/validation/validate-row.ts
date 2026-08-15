@@ -10,6 +10,14 @@ import type {
   ValidationSeverity,
   ValidationValueType,
 } from './types';
+import {
+  evaluateComparison,
+  evaluateExpression,
+  getValidationRuleId,
+  matchesWhen,
+  analyzeValidationRules,
+  validationRuleColumnIds,
+} from './rule-analysis';
 
 function isEmpty(value: CellValue): boolean {
   return value === null || (typeof value === 'string' && value.trim() === '');
@@ -47,15 +55,19 @@ function issue(
   value: CellValue,
   message: string,
   severity: ValidationSeverity = 'error',
+  ruleId?: string,
 ): ValidationIssue {
-  return { rowId: row.rowId, sourceRowNumber: row.sourceRowNumber, columnId, code, value, message, severity };
+  return { rowId: row.rowId, sourceRowNumber: row.sourceRowNumber, columnId, code, value, message, severity, ruleId };
 }
 
 function stableKey(values: readonly CellValue[]): string {
   return JSON.stringify(values.map((value) => [typeof value, value]));
 }
 
-type LocalValidationRule = Exclude<ValidationRule, { type: 'unique' } | { type: 'compositeUnique' } | ConditionalMatrixRule>;
+type LocalValidationRule = Exclude<
+  ValidationRule,
+  { type: 'unique' } | { type: 'compositeUnique' } | ConditionalMatrixRule | { type: 'comparison' } | { type: 'expression' } | { type: 'reference' }
+>;
 
 function validateLocalRule(
   row: DataRow,
@@ -101,11 +113,37 @@ function validateLocalRule(
   }
 }
 
+function applyRuleMetadata(issues: ValidationIssue[], rule: ValidationRule, ruleId: string): ValidationIssue[] {
+  return issues.map((current) => ({
+    ...current,
+    ruleId,
+    severity: rule.severity ?? current.severity,
+    message: rule.message ?? current.message,
+  }));
+}
+
+function ruleFailure(
+  row: DataRow,
+  rule: Extract<ValidationRule, { type: 'comparison' | 'expression' }>,
+  ruleId: string,
+): ValidationIssue[] {
+  const columnId = validationRuleColumnIds(rule)[0] ?? '';
+  const value = row.values[columnId] ?? null;
+  const valid = rule.type === 'comparison' ? evaluateComparison(rule, row) : evaluateExpression(rule.expression, row) === true;
+  return valid ? [] : [issue(row, columnId, rule.type, value, rule.type === 'comparison' ? 'A comparação entre os valores não foi satisfeita.' : 'A expressão de validação não foi satisfeita.', rule.severity ?? 'error', ruleId)];
+}
+
 export function validateRow(row: DataRow, rules: readonly ValidationRule[]): ValidationIssue[] {
-  return rules.flatMap((rule) => {
-    if (rule.type === 'unique' || rule.type === 'compositeUnique') return [];
-    if (rule.type === 'conditionalMatrix') return validateConditionalMatrixRow(row, rule);
-    return validateLocalRule(row, rule);
+  return rules.flatMap((rule, index) => {
+    if (rule.enabled === false || rule.type === 'unique' || rule.type === 'compositeUnique' || rule.type === 'reference') return [];
+    if (!matchesWhen(rule.when, row)) return [];
+    const ruleId = getValidationRuleId(rule, index);
+    const issues = rule.type === 'conditionalMatrix'
+      ? validateConditionalMatrixRow(row, rule)
+      : rule.type === 'comparison' || rule.type === 'expression'
+        ? ruleFailure(row, rule, ruleId)
+        : validateLocalRule(row, rule);
+    return applyRuleMetadata(issues, rule, ruleId);
   });
 }
 
@@ -166,8 +204,16 @@ function validateConditionalConstraint(
 function validateConditionalMatrixRow(row: DataRow, rule: ConditionalMatrixRule): ValidationIssue[] {
   const matchingEntries = rule.entries.filter((entry) => matchesConditionalMatrixEntry(row, rule, entry));
   if (matchingEntries.length === 0) {
+    if (rule.noMatchBehavior === 'ignore') return [];
     const columnId = rule.keyColumnIds[0] ?? rule.dependentColumnIds[0] ?? '';
-    return [conditionalIssue(row, columnId, 'no_match', row.values[columnId] ?? null, 'Nenhuma linha da matriz condicional corresponde a este registro.')];
+    return [issue(
+      row,
+      columnId,
+      'conditional_no_match',
+      row.values[columnId] ?? null,
+      rule.message ?? 'Nenhuma linha da matriz condicional corresponde a este registro.',
+      rule.noMatchBehavior === 'error' ? 'error' : rule.severity ?? 'warning',
+    )];
   }
   return matchingEntries.flatMap((entry) => rule.dependentColumnIds.flatMap((columnId) => {
     const constraint = entry.constraints[columnId];
@@ -175,7 +221,7 @@ function validateConditionalMatrixRow(row: DataRow, rule: ConditionalMatrixRule)
   }));
 }
 
-function validateUniqueRule(dataset: Dataset, rule: Extract<ValidationRule, { type: 'unique' }>): ValidationIssue[] {
+function validateUniqueRule(dataset: Dataset, rule: Extract<ValidationRule, { type: 'unique' }>, ruleId: string): ValidationIssue[] {
   const groups = new Map<string, DataRow[]>();
   for (const row of dataset.rows) {
     const value = row.values[rule.columnId] ?? null;
@@ -184,7 +230,7 @@ function validateUniqueRule(dataset: Dataset, rule: Extract<ValidationRule, { ty
     groups.set(key, [...(groups.get(key) ?? []), row]);
   }
   return [...groups.values()].flatMap((rows) => rows.length > 1
-    ? rows.map((row) => issue(row, rule.columnId, 'unique', row.values[rule.columnId] ?? null, 'O valor deve ser único.'))
+    ? rows.map((row) => issue(row, rule.columnId, 'unique', row.values[rule.columnId] ?? null, rule.message ?? 'O valor deve ser único.', rule.severity ?? 'error', ruleId))
     : []);
 }
 
@@ -194,6 +240,7 @@ function validateConditionalUniqueRule(
   entry: ConditionalMatrixEntry,
   columnId: string,
   compositeColumnIds?: readonly string[],
+  ruleId = '',
 ): ValidationIssue[] {
   const matchingRows = dataset.rows.filter((row) => matchesConditionalMatrixEntry(row, matrix, entry));
   if (compositeColumnIds && compositeColumnIds.length === 0) return [];
@@ -213,12 +260,13 @@ function validateConditionalUniqueRule(
       compositeColumnIds ? 'conditional_composite_unique' : 'conditional_unique',
       row.values[columnId] ?? null,
       compositeColumnIds ? 'Os valores combinados devem ser únicos no contexto condicional.' : 'O valor deve ser único no contexto condicional.',
-      'warning',
+      matrix.severity ?? 'warning',
+      ruleId,
     ))
     : []);
 }
 
-function validateCompositeUniqueRule(dataset: Dataset, rule: Extract<ValidationRule, { type: 'compositeUnique' }>): ValidationIssue[] {
+function validateCompositeUniqueRule(dataset: Dataset, rule: Extract<ValidationRule, { type: 'compositeUnique' }>, ruleId: string): ValidationIssue[] {
   if (rule.columnIds.length === 0) return [];
   const groups = new Map<string, DataRow[]>();
   for (const row of dataset.rows) {
@@ -228,27 +276,52 @@ function validateCompositeUniqueRule(dataset: Dataset, rule: Extract<ValidationR
     groups.set(key, [...(groups.get(key) ?? []), row]);
   }
   return [...groups.values()].flatMap((rows) => rows.length > 1
-    ? rows.map((row) => issue(row, rule.columnIds[0], 'composite_unique', row.values[rule.columnIds[0]] ?? null, 'Os valores combinados devem ser únicos.'))
+    ? rows.map((row) => issue(row, rule.columnIds[0], 'composite_unique', row.values[rule.columnIds[0]] ?? null, rule.message ?? 'Os valores combinados devem ser únicos.', rule.severity ?? 'error', ruleId))
     : []);
 }
 
 export function validateDataset(dataset: Dataset, rules: readonly ValidationRule[]): ValidationResult {
-  const issues = dataset.rows.flatMap((row) => validateRow(row, rules));
-  for (const rule of rules) {
-    if (rule.type === 'unique') issues.push(...validateUniqueRule(dataset, rule));
-    if (rule.type === 'compositeUnique') issues.push(...validateCompositeUniqueRule(dataset, rule));
+  const configurationErrors = analyzeValidationRules(rules, dataset.columns.map(({ id }) => id));
+  const invalidRuleIds = new Set(configurationErrors.map(({ ruleId }) => ruleId));
+  const validRules = rules.filter((rule, index) => !invalidRuleIds.has(getValidationRuleId(rule, index)));
+  const issues = dataset.rows.flatMap((row) => validateRow(row, validRules));
+  for (const [index, rule] of rules.entries()) {
+    if (rule.enabled === false || invalidRuleIds.has(getValidationRuleId(rule, index))) continue;
+    const ruleId = getValidationRuleId(rule, index);
+    if (rule.type === 'unique') issues.push(...validateUniqueRule(dataset, rule, ruleId));
+    if (rule.type === 'compositeUnique') issues.push(...validateCompositeUniqueRule(dataset, rule, ruleId));
+    if (rule.type === 'reference') {
+      const knownValues = new Set(dataset.rows.map((row) => row.values[rule.referenceColumnId] ?? null).filter((value) => !isEmpty(value)).map((value) => stableKey([value])));
+      issues.push(...dataset.rows.filter((row) => {
+        const exists = knownValues.has(stableKey([row.values[rule.columnId] ?? null]));
+        return (rule.mode === 'exists' ? !exists : exists) && !isEmpty(row.values[rule.columnId] ?? null);
+      }).map((row) => issue(row, rule.columnId, 'reference', row.values[rule.columnId] ?? null, rule.message ?? 'A referência não corresponde aos valores disponíveis.', rule.severity ?? 'error', ruleId)));
+    }
     if (rule.type === 'conditionalMatrix') {
       for (const entry of rule.entries) {
         for (const columnId of rule.dependentColumnIds) {
           const constraint = entry.constraints[columnId];
           if (!constraint) continue;
-          if (constraint.type === 'unique') issues.push(...validateConditionalUniqueRule(dataset, rule, entry, columnId));
+          if (constraint.type === 'unique') issues.push(...validateConditionalUniqueRule(dataset, rule, entry, columnId, undefined, ruleId));
           if (constraint.type === 'compositeUnique') {
-            issues.push(...validateConditionalUniqueRule(dataset, rule, entry, constraint.columnIds[0] ?? columnId, constraint.columnIds));
+            issues.push(...validateConditionalUniqueRule(dataset, rule, entry, constraint.columnIds[0] ?? columnId, constraint.columnIds, ruleId));
           }
         }
       }
     }
   }
-  return { isValid: issues.every(({ severity }) => (severity ?? 'error') !== 'error'), issues };
+  const ruleImpact = Object.fromEntries(rules.map((rule, index) => {
+    const ruleId = getValidationRuleId(rule, index);
+    const ruleIssues = issues.filter((current) => current.ruleId === ruleId);
+    return [ruleId, {
+      affectedRows: new Set(ruleIssues.map(({ rowId }) => rowId)).size,
+      affectedCells: new Set(ruleIssues.map(({ rowId, columnId }) => `${rowId}\u0000${columnId}`)).size,
+    }];
+  }));
+  return {
+    isValid: configurationErrors.length === 0 && issues.every(({ severity }) => (severity ?? 'error') !== 'error'),
+    issues,
+    configurationErrors,
+    ruleImpact,
+  };
 }

@@ -3,7 +3,7 @@ import type { CellValue, DataRow, Dataset } from '../domain/dataset/types';
 import { planWriteInBatches } from '../domain/merge/plan-write';
 import { applyTransform, compareDataRows } from '../domain/transforms/apply-transform';
 import type { TransformCommand } from '../domain/transforms/types';
-import { matchesConditionalMatrixEntry, validateRow } from '../domain/validation/validate-row';
+import { matchesConditionalMatrixEntry, validateDataset, validateRow } from '../domain/validation/validate-row';
 import type { ConditionalMatrixRule, ValidationIssue, ValidationRule } from '../domain/validation/types';
 import { listSourceSheets, readSource } from '../io/source/read-source';
 import { exportWorkbook, scanExportRisks } from '../io/template/export-workbook';
@@ -236,6 +236,16 @@ async function dispatchRequest(
       return { type: 'APPLY_TRANSFORMS', dataset };
     }
     case 'VALIDATE': {
+      const requiresFullValidation = request.rules.some((rule) =>
+        rule.type === 'comparison'
+        || rule.type === 'expression'
+        || rule.type === 'reference'
+        || rule.when !== undefined,
+      );
+      if (requiresFullValidation) {
+        ensureNotCancelled(request.operationId);
+        return { type: 'VALIDATE', validationResult: validateDataset(request.dataset, request.rules) };
+      }
       const localRules = request.rules.filter((rule) => rule.type !== 'unique' && rule.type !== 'compositeUnique');
       const issues = [] as ReturnType<typeof validateRow>;
       await runBatches(

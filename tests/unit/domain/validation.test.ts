@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { validateDataset, validateRow } from '../../../src/domain/validation/validate-row';
 import { distinctMatrixEntries, validateConditionalMatrixRule } from '../../../src/domain/validation/matrix';
+import { analyzeValidationRules, validateRuleConfiguration } from '../../../src/domain/validation/rule-analysis';
 import type { Dataset, DataRow } from '../../../src/domain/dataset/types';
 import type { ConditionalMatrixRule, ValidationRule } from '../../../src/domain/validation/types';
 
@@ -284,6 +285,94 @@ describe('validateDataset', () => {
       { email__1: 'ana@example.com', office__1: 'SP', code__1: 'A' },
       { email__1: 'ana@example.com', office__1: 'SP', code__1: 'A' },
       { email__1: 'bruno@example.com', office__1: 'SP', code__1: 'B' },
+    ]);
+  });
+
+  it('validates same-row comparisons, safe expressions, and custom rule metadata', () => {
+    const dataset: Dataset = {
+      columns: [],
+      rows: [
+        row('r-1', 2, { start__1: 10, end__1: 4, total__1: 14 }),
+        row('r-2', 3, { start__1: 2, end__1: 4, total__1: 6 }),
+      ],
+    };
+    const rules: ValidationRule[] = [
+      {
+        type: 'comparison',
+        id: 'range-order',
+        name: 'Início antes do fim',
+        left: { type: 'column', columnId: 'start__1' },
+        operator: 'lessThanOrEqual',
+        right: { type: 'column', columnId: 'end__1' },
+      },
+      {
+        type: 'expression',
+        id: 'total-check',
+        expression: {
+          type: 'binary',
+          operator: '==',
+          left: {
+            type: 'binary',
+            operator: '+',
+            left: { type: 'column', columnId: 'start__1' },
+            right: { type: 'column', columnId: 'end__1' },
+          },
+          right: { type: 'column', columnId: 'total__1' },
+        },
+      },
+    ];
+
+    const result = validateDataset(dataset, rules);
+
+    expect(result.issues.map(({ rowId, ruleId, code }) => [rowId, ruleId, code])).toEqual([
+      ['r-1', 'range-order', 'comparison'],
+    ]);
+    expect(result.ruleImpact).toEqual({
+      'range-order': { affectedRows: 1, affectedCells: 1 },
+      'total-check': { affectedRows: 0, affectedCells: 0 },
+    });
+  });
+
+  it('validates references and blocks invalid configurations before execution', () => {
+    const dataset: Dataset = {
+      columns: [],
+      rows: [
+        row('r-1', 2, { code__1: 'A', reference__1: 'A' }),
+        row('r-2', 3, { code__1: 'B', reference__1: 'C' }),
+      ],
+    };
+    const rule: ValidationRule = {
+      type: 'reference',
+      id: 'known-code',
+      columnId: 'reference__1',
+      referenceColumnId: 'code__1',
+      mode: 'exists',
+    };
+
+    const result = validateDataset(dataset, [rule]);
+
+    expect(result.issues).toEqual([expect.objectContaining({
+      rowId: 'r-2',
+      ruleId: 'known-code',
+      code: 'reference',
+    })]);
+    expect(validateRuleConfiguration({ type: 'numberRange', columnId: 'missing__1', min: 5, max: 2 }, ['value__1'])).toEqual([
+      'A coluna da regra não existe: missing__1.',
+      'O limite mínimo não pode ser maior que o máximo.',
+    ]);
+  });
+
+  it('detects duplicated and contradictory rules before scanning rows', () => {
+    const errors = analyzeValidationRules([
+      { type: 'required', id: 'required-a', columnId: 'value__1' },
+      { type: 'required', id: 'required-b', columnId: 'value__1' },
+      { type: 'numberRange', id: 'range-a', columnId: 'value__1', max: 2 },
+      { type: 'numberRange', id: 'range-b', columnId: 'value__1', min: 5 },
+    ], ['value__1']);
+
+    expect(errors.map(({ message }) => message)).toEqual([
+      'As regras required-a e required-b são duplicadas.',
+      'As regras range-a e range-b não possuem valores em comum.',
     ]);
   });
 });
