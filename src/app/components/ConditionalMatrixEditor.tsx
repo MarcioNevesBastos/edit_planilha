@@ -1,6 +1,7 @@
 import React from 'react';
 import type { CellValue, Dataset, DatasetColumn } from '../../domain/dataset/types';
 import { distinctMatrixEntries, validateConditionalMatrixRule } from '../../domain/validation/matrix';
+import { SearchableMatrixEntries } from './SearchableMatrixEntries';
 import type {
   ConditionalConstraint,
   ConditionalMatrixEntry,
@@ -92,6 +93,7 @@ export function ConditionalMatrixEditor({
 }: ConditionalMatrixEditorProps) {
   const columnById = new Map(columns.map((column) => [column.id, column]));
   const errors = validateConditionalMatrixRule(rule, columns.map(({ id }) => id));
+  const conflictErrors = errors.filter((error) => error.includes('entram em conflito'));
 
   const updateEntry = (entryIndex: number, update: (entry: ConditionalMatrixEntry) => ConditionalMatrixEntry) => {
     onChange({ ...rule, entries: rule.entries.map((entry, index) => index === entryIndex ? update(entry) : entry) });
@@ -134,12 +136,23 @@ export function ConditionalMatrixEditor({
       </div>
       {errors.length > 0 ? (
         <div className="error-banner" role="alert">
-          {errors.map((error) => <p key={error}>{error}</p>)}
+          <strong>
+            {conflictErrors.length > 0
+              ? `${conflictErrors.length} conflito${conflictErrors.length === 1 ? '' : 's'} encontrado${conflictErrors.length === 1 ? '' : 's'}.`
+              : `${errors.length} problema${errors.length === 1 ? '' : 's'} encontrado${errors.length === 1 ? '' : 's'}.`}
+          </strong>
+          <div className="matrix-error-details" role="region" aria-label="Detalhes dos conflitos">
+            {errors.map((error) => <p key={error}>{error}</p>)}
+          </div>
         </div>
       ) : null}
-      <div className="conditional-matrix-scroll">
-        <table className="conditional-matrix-table">
-          <thead>
+      <SearchableMatrixEntries
+        entries={rule.entries}
+        colSpan={rule.keyColumnIds.length + rule.dependentColumnIds.length + 1}
+        disabled={disabled}
+        getSearchText={(entry) => JSON.stringify(entry)}
+        renderHeader={() => (
+          <>
             <tr>
               <th colSpan={rule.keyColumnIds.length}>Condições</th>
               <th colSpan={rule.dependentColumnIds.length}>Consequências</th>
@@ -150,88 +163,85 @@ export function ConditionalMatrixEditor({
               {rule.dependentColumnIds.map((columnId) => <th key={`dependent-${columnId}`}>{columnById.get(columnId)?.header ?? columnId}</th>)}
               <th aria-label="Ações" />
             </tr>
-          </thead>
-          <tbody>
-            {rule.entries.map((entry, entryIndex) => (
-              <tr key={`matrix-entry-${entryIndex}`}>
-                {rule.keyColumnIds.map((columnId) => {
-                  const condition = entry.conditions[columnId] ?? { operator: 'any' as const };
-                  const column = columnById.get(columnId) ?? columns[0];
-                  return (
-                    <td key={columnId}>
-                      <select
-                        aria-label={`Operador ${column?.header ?? columnId}, linha ${entryIndex + 1}`}
-                        value={condition.operator}
-                        disabled={disabled}
-                        onChange={(event) => {
-                          const operator = event.currentTarget.value as MatrixCondition['operator'];
-                          updateCondition(entryIndex, columnId, operator === 'equals'
-                            ? { operator, value: column ? parseValue('', column) : '' }
-                            : { operator });
-                        }}
-                      >
-                        <option value="any">Qualquer</option>
-                        <option value="equals">Igual a</option>
-                        <option value="empty">Vazio</option>
-                      </select>
-                      {condition.operator === 'equals' ? (
-                        <input
-                          aria-label={`Valor ${column?.header ?? columnId}, linha ${entryIndex + 1}`}
-                          value={displayValue(condition.value)}
-                          disabled={disabled}
-                          onChange={(event) => updateCondition(entryIndex, columnId, { operator: 'equals', value: column ? parseValue(event.currentTarget.value, column) : event.currentTarget.value })}
-                        />
-                      ) : null}
-                    </td>
-                  );
-                })}
-                {rule.dependentColumnIds.map((columnId) => {
-                  const constraint = entry.constraints[columnId] ?? { type: 'any' as const };
-                  const column = columnById.get(columnId) ?? columns[0];
-                  return (
-                    <td key={columnId}>
-                      <select
-                        aria-label={`Regra ${column?.header ?? columnId}, linha ${entryIndex + 1}`}
-                        value={constraint.type}
-                        disabled={disabled}
-                        onChange={(event) => {
-                          const type = event.currentTarget.value as ConditionalConstraint['type'];
-                          const next: ConditionalConstraint = type === 'type'
-                            ? { type, valueType: 'string' }
-                            : type === 'allowed'
-                              ? { type, allowedValues: [] }
-                              : type === 'numberRange' || type === 'dateRange' || type === 'stringLength'
-                                ? { type }
-                                : type === 'equals'
-                                  ? { type, value: column ? parseValue('', column) : '' }
-                                  : type === 'compositeUnique'
-                                    ? { type, columnIds: rule.dependentColumnIds }
-                                    : { type };
-                          updateConstraint(entryIndex, columnId, next);
-                        }}
-                      >
-                        {constraintTypeOptions().map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
-                      </select>
-                      <ConstraintEditor
-                        column={column}
-                        constraint={constraint}
-                        disabled={disabled}
-                        onChange={(next) => updateConstraint(entryIndex, columnId, next)}
-                      />
-                    </td>
-                  );
-                })}
-                <td>
-                  <button type="button" disabled={disabled} onClick={() => onChange({ ...rule, entries: rule.entries.filter((_, index) => index !== entryIndex) })}>
-                    Remover
-                  </button>
+          </>
+        )}
+        renderEntry={(entry, entryIndex) => (
+          <tr key={`matrix-entry-${entryIndex}`}>
+            {rule.keyColumnIds.map((columnId) => {
+              const condition = entry.conditions[columnId] ?? { operator: 'any' as const };
+              const column = columnById.get(columnId) ?? columns[0];
+              return (
+                <td key={columnId}>
+                  <select
+                    aria-label={`Operador ${column?.header ?? columnId}, linha ${entryIndex + 1}`}
+                    value={condition.operator}
+                    disabled={disabled}
+                    onChange={(event) => {
+                      const operator = event.currentTarget.value as MatrixCondition['operator'];
+                      updateCondition(entryIndex, columnId, operator === 'equals'
+                        ? { operator, value: column ? parseValue('', column) : '' }
+                        : { operator });
+                    }}
+                  >
+                    <option value="any">Qualquer</option>
+                    <option value="equals">Igual a</option>
+                    <option value="empty">Vazio</option>
+                  </select>
+                  {condition.operator === 'equals' ? (
+                    <input
+                      aria-label={`Valor ${column?.header ?? columnId}, linha ${entryIndex + 1}`}
+                      value={displayValue(condition.value)}
+                      disabled={disabled}
+                      onChange={(event) => updateCondition(entryIndex, columnId, { operator: 'equals', value: column ? parseValue(event.currentTarget.value, column) : event.currentTarget.value })}
+                    />
+                  ) : null}
                 </td>
-              </tr>
-            ))}
-            {rule.entries.length === 0 ? <tr><td colSpan={rule.keyColumnIds.length + rule.dependentColumnIds.length + 1}>Nenhuma linha configurada.</td></tr> : null}
-          </tbody>
-        </table>
-      </div>
+              );
+            })}
+            {rule.dependentColumnIds.map((columnId) => {
+              const constraint = entry.constraints[columnId] ?? { type: 'any' as const };
+              const column = columnById.get(columnId) ?? columns[0];
+              return (
+                <td key={columnId}>
+                  <select
+                    aria-label={`Regra ${column?.header ?? columnId}, linha ${entryIndex + 1}`}
+                    value={constraint.type}
+                    disabled={disabled}
+                    onChange={(event) => {
+                      const type = event.currentTarget.value as ConditionalConstraint['type'];
+                      const next: ConditionalConstraint = type === 'type'
+                        ? { type, valueType: 'string' }
+                        : type === 'allowed'
+                          ? { type, allowedValues: [] }
+                          : type === 'numberRange' || type === 'dateRange' || type === 'stringLength'
+                            ? { type }
+                            : type === 'equals'
+                              ? { type, value: column ? parseValue('', column) : '' }
+                              : type === 'compositeUnique'
+                                ? { type, columnIds: rule.dependentColumnIds }
+                                : { type };
+                      updateConstraint(entryIndex, columnId, next);
+                    }}
+                  >
+                    {constraintTypeOptions().map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
+                  </select>
+                  <ConstraintEditor
+                    column={column}
+                    constraint={constraint}
+                    disabled={disabled}
+                    onChange={(next) => updateConstraint(entryIndex, columnId, next)}
+                  />
+                </td>
+              );
+            })}
+            <td>
+              <button type="button" disabled={disabled} onClick={() => onChange({ ...rule, entries: rule.entries.filter((_, index) => index !== entryIndex) })}>
+                Remover
+              </button>
+            </td>
+          </tr>
+        )}
+      />
       <p className="selection-note">{rule.entries.length} linha(s) configurada(s).</p>
     </section>
   );

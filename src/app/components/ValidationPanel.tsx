@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import type { Dataset, DatasetColumn } from '../../domain/dataset/types';
 import type { ConditionalMatrixRule, ValidationIssue, ValidationRule } from '../../domain/validation/types';
 import { ConditionalMatrixEditor } from './ConditionalMatrixEditor';
+import { SearchableChecklist } from './SearchableChecklist';
 
 interface ValidationPanelProps {
   dataset: Dataset;
@@ -110,34 +111,20 @@ export function ValidationPanel({
         <h3>Validações condicionais</h3>
         <p className="selection-note">Escolha as colunas que definem o contexto e as colunas que receberão regras.</p>
         <div className="matrix-column-picker">
-          <fieldset>
-            <legend>Colunas-chave</legend>
-            {columns.map((column) => (
-              <label key={`matrix-key-${column.id}`}>
-                <input
-                  type="checkbox"
-                  checked={matrixKeyColumnIds.includes(column.id)}
-                  disabled={disabled}
-                  onChange={() => toggleColumn(matrixKeyColumnIds, setMatrixKeyColumnIds, column.id)}
-                />
-                {column.header}
-              </label>
-            ))}
-          </fieldset>
-          <fieldset>
-            <legend>Colunas dependentes</legend>
-            {columns.map((column) => (
-              <label key={`matrix-dependent-${column.id}`}>
-                <input
-                  type="checkbox"
-                  checked={matrixDependentColumnIds.includes(column.id)}
-                  disabled={disabled}
-                  onChange={() => toggleColumn(matrixDependentColumnIds, setMatrixDependentColumnIds, column.id)}
-                />
-                {column.header}
-              </label>
-            ))}
-          </fieldset>
+          <SearchableChecklist
+            title="Colunas-chave"
+            options={columns.map((column) => ({ id: column.id, label: column.header }))}
+            selectedIds={matrixKeyColumnIds}
+            disabled={disabled}
+            onToggle={(id) => toggleColumn(matrixKeyColumnIds, setMatrixKeyColumnIds, id)}
+          />
+          <SearchableChecklist
+            title="Colunas dependentes"
+            options={columns.map((column) => ({ id: column.id, label: column.header }))}
+            selectedIds={matrixDependentColumnIds}
+            disabled={disabled}
+            onToggle={(id) => toggleColumn(matrixDependentColumnIds, setMatrixDependentColumnIds, id)}
+          />
         </div>
         <button
           type="button"

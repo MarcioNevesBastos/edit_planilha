@@ -1759,16 +1759,23 @@ const APP_STYLES = `
   .issue-list button.warning-issue { border-color: #ecd9a8; color: #735319; background: #fffaf0; }
   .conditional-matrices-section { grid-column: 1 / -1; }
   .matrix-column-picker { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 14px; margin: 14px 0; }
-  .matrix-column-picker fieldset { display: grid; gap: 7px; padding: 12px; border: 1px solid #dce6e0; border-radius: 10px; background: white; }
+  .matrix-column-picker fieldset { min-width: 0; padding: 12px; border: 1px solid #dce6e0; border-radius: 10px; background: white; }
   .matrix-column-picker legend { padding: 0 5px; color: #4f6259; font-size: 12px; font-weight: 800; }
-  .matrix-column-picker label { display: flex; gap: 8px; align-items: center; color: #52655c; font-size: 12px; }
+  .searchable-list-search { display: grid; gap: 5px; color: #52655c; font-size: 11px; font-weight: 800; }
+  .searchable-list-search input, .matrix-entry-search input { width: 100%; min-height: 34px; padding: 6px 8px; border: 1px solid #c9d4cf; border-radius: 7px; color: #17251f; background: white; font-size: 12px; }
+  .searchable-list-results { display: grid; gap: 7px; margin-top: 8px; color: #708078; font-size: 11px; }
+  .searchable-checklist-viewport { display: grid; gap: 7px; height: clamp(180px, 26vh, 260px); overflow-y: auto; padding-right: 5px; }
+  .searchable-checklist-viewport label { display: flex; gap: 8px; align-items: center; color: #52655c; font-size: 12px; }
+  .matrix-entry-search { display: grid; grid-template-columns: minmax(240px, 1fr) auto; gap: 12px; align-items: end; padding: 10px 0; color: #708078; font-size: 11px; font-weight: 800; }
+  .matrix-entry-search label { display: grid; gap: 5px; }
+  .matrix-entry-search > span { padding-bottom: 9px; white-space: nowrap; }
   .conditional-matrix-card { display: grid; gap: 12px; margin-top: 18px; padding: 16px; border: 1px solid #d7e3dc; border-radius: 12px; background: white; }
   .matrix-card-heading, .matrix-toolbar, .matrix-actions { display: flex; align-items: center; gap: 9px; }
   .matrix-card-heading strong { margin-right: auto; color: #274538; }
   .matrix-toolbar > div:first-child { margin-right: auto; }
   .matrix-toolbar p { margin: 5px 0 0; font-size: 12px; }
   .matrix-actions { flex-wrap: wrap; }
-  .conditional-matrix-scroll { overflow-x: auto; border: 1px solid #dce6e0; border-radius: 10px; }
+  .conditional-matrix-scroll { height: clamp(260px, 42vh, 440px); overflow: auto; border: 1px solid #dce6e0; border-radius: 10px; }
   .conditional-matrix-table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: 12px; }
   .conditional-matrix-table th { padding: 9px; border-bottom: 1px solid #dce6e0; color: #4f6259; background: #f4f8f5; text-align: left; white-space: nowrap; }
   .conditional-matrix-table td { min-width: 150px; padding: 8px; border-bottom: 1px solid #edf1ef; vertical-align: top; }
@@ -1812,6 +1819,8 @@ const APP_STYLES = `
   .operation-panel progress { width: 100%; accent-color: #176b45; }
   .operation-panel button { border: 1px solid #b9c8c1; color: #375246; background: white; }
   .error-banner { margin: 18px 34px 0; padding: 13px 16px; border: 1px solid #e6b8b2; border-radius: 11px; color: #7b332d; background: #fff3f2; }
+  .matrix-error-details { max-height: clamp(80px, 14vh, 180px); overflow-y: auto; margin-top: 8px; padding-right: 6px; }
+  .matrix-error-details p { margin: 5px 0 0; }
   @media (max-width: 900px) {
     .app-shell { width: min(100% - 20px, 1500px); padding-top: 16px; }
     .step-heading, .step-content, .workflow-footer { padding-left: 20px; padding-right: 20px; }
@@ -1830,6 +1839,8 @@ const APP_STYLES = `
     .inline-form { grid-template-columns: 1fr; }
     .issue-list button { grid-template-columns: 1fr; }
     .matrix-column-picker { grid-template-columns: 1fr; }
+    .matrix-entry-search { grid-template-columns: 1fr; }
+    .matrix-entry-search > span { padding-bottom: 0; }
     .matrix-toolbar { align-items: flex-start; flex-direction: column; }
     .matrix-toolbar > div:first-child { margin-right: 0; }
     .workflow-footer { position: sticky; bottom: 0; z-index: 3; }

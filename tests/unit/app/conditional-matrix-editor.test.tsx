@@ -93,4 +93,76 @@ describe('ConditionalMatrixEditor', () => {
     expect(screen.getByRole('option', { name: 'Data' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'Booleano' })).toBeInTheDocument();
   });
+
+  it('filtra linhas importadas e mantém o índice original ao editar', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const entries = [
+      {
+        conditions: { context__1: { operator: 'equals' as const, value: 'Cliente A' } },
+        constraints: { value__1: { type: 'equals' as const, value: 'Valor A' } },
+      },
+      {
+        conditions: { context__1: { operator: 'equals' as const, value: 'Cliente B' } },
+        constraints: { value__1: { type: 'equals' as const, value: 'Valor B' } },
+      },
+    ];
+
+    render(
+      <ConditionalMatrixEditor
+        dataset={dataset}
+        columns={dataset.columns}
+        rule={{ ...rule, entries }}
+        disabled={false}
+        onChange={onChange}
+      />,
+    );
+
+    await user.type(screen.getByRole('searchbox', { name: 'Pesquisar linhas da matriz' }), 'cliente b');
+
+    expect(screen.getByDisplayValue('Cliente B')).toBeVisible();
+    expect(screen.queryByDisplayValue('Cliente A')).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Operador Contexto, linha 2' })).toBeVisible();
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Regra Valor, linha 2' }), 'required');
+
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      entries: [entries[0], expect.objectContaining({
+        constraints: { value__1: { type: 'required' } },
+      })],
+    }));
+  });
+
+  it('mantém o resumo de conflitos fora dos detalhes roláveis', () => {
+    render(
+      <ConditionalMatrixEditor
+        dataset={dataset}
+        columns={dataset.columns}
+        rule={{
+          ...rule,
+          entries: [
+            {
+              conditions: { context__1: { operator: 'any' } },
+              constraints: { value__1: { type: 'equals', value: 'A' } },
+            },
+            {
+              conditions: { context__1: { operator: 'any' } },
+              constraints: { value__1: { type: 'equals', value: 'B' } },
+            },
+          ],
+        }}
+        disabled={false}
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('1 conflito encontrado.')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Detalhes dos conflitos' })).toBeInTheDocument();
+  });
+
+  it('exibe estado vazio distinto de uma pesquisa sem resultados', () => {
+    render(<ConditionalMatrixEditor dataset={dataset} columns={dataset.columns} rule={rule} disabled={false} onChange={vi.fn()} />);
+
+    expect(screen.getByText('Nenhuma linha configurada.')).toBeInTheDocument();
+  });
 });
