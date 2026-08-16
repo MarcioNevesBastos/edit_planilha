@@ -43,6 +43,7 @@ export function Stepper({
           );
         })}
       </ol>
+      <p className="stepper-scroll-hint" aria-hidden="true">Deslize para ver as etapas</p>
     </nav>
   );
 }

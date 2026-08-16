@@ -1,5 +1,5 @@
 import Papa from 'papaparse';
-import { createDataset, detectColumnTypes } from './dataset';
+import { createDataset, detectColumnTypes, normalizeCsvRows } from './dataset';
 import { SourceReadError, type ReadSourceOptions } from './types';
 
 const BROWSER_CSV_CHUNK_SIZE = 256 * 1024;
@@ -36,11 +36,12 @@ export async function readCsv(file: File, options: Pick<ReadSourceOptions, 'deli
     .filter(({ row }) => row.some((value) => value !== ''));
   const rows = indexedRows.map(({ row }) => row.map((value) => value ?? null));
 
+  const normalizedRows = normalizeCsvRows(rows);
   return createDataset(
     headerRow.map((value) => value ?? ''),
-    rows,
+    normalizedRows,
     indexedRows.map(({ sourceRowNumber }) => sourceRowNumber),
-    detectColumnTypes(headerRow, rows),
+    detectColumnTypes(headerRow, normalizedRows),
   );
 }
 

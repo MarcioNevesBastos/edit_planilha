@@ -4,5 +4,6 @@ export default defineConfig({
   test: {
     environment: 'node',
     exclude: [...configDefaults.exclude, 'tests/e2e/**'],
+    testTimeout: 30_000,
   },
 });

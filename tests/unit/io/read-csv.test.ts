@@ -7,6 +7,27 @@ import {
 } from '../../../src/utils/memory-estimate';
 
 describe('readCsv', () => {
+  it('converts consistent numeric CSV columns without changing text columns', async () => {
+    const dataset = await readCsv(new File([
+      'ID;Preço;Nome\n1;1,37;Ana\n2;2,50;Bruno\n',
+    ], 'dados.csv'), { delimiter: ';' });
+
+    expect(dataset.columns.map((column) => column.detectedType)).toEqual(['number', 'number', 'string']);
+    expect(dataset.rows.map((row) => row.values.id__1)).toEqual([1, 2]);
+    expect(dataset.rows.map((row) => row.values[dataset.columns[1].id])).toEqual([1.37, 2.5]);
+    expect(dataset.rows.map((row) => row.values.nome__1)).toEqual(['Ana', 'Bruno']);
+  });
+
+  it('preserves zero-padded and mixed numeric-looking CSV values as text', async () => {
+    const dataset = await readCsv(new File([
+      'Código;Valor\n001;1\n002;indefinido\n',
+    ], 'dados.csv'), { delimiter: ';' });
+
+    expect(dataset.columns.map((column) => column.detectedType)).toEqual(['string', 'string']);
+    expect(dataset.rows[0].values[dataset.columns[0].id]).toBe('001');
+    expect(dataset.rows[0].values[dataset.columns[1].id]).toBe('1');
+  });
+
   it('uses an explicit semicolon delimiter and preserves source row numbers', async () => {
     const dataset = await readCsv(new File([
       'ID;Nome\n1;Ana\n2;Bruno\n',

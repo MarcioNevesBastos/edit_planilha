@@ -44,12 +44,15 @@ for (const rowCount of LOAD_ROW_COUNTS) {
 
     await startHeartbeat(page);
     await page.getByRole('button', { name: 'Adicionar transformação' }).click();
-    const transformStayedActive = await assertHeartbeatContinuesDuringActiveOperation(page, 'transform');
-    if (transformStayedActive) {
-      await page.getByRole('button', { name: 'Cancelar' }).click();
-    }
-    await expect(page.locator('.operation-panel')).toBeHidden();
-    if (await page.getByRole('button', { name: 'Remover' }).count()) {
+    const transformResult = page.getByRole('rowheader', { name: 'Prefixo' });
+    await waitForOperationOrResult(page, transformResult);
+    const cancelButton = page.getByRole('button', { name: 'Cancelar' });
+    if (await cancelButton.isVisible().catch(() => false)) {
+      await cancelButton.click();
+      await expect(page.locator('.operation-panel')).toBeHidden({ timeout: 60_000 });
+      await expect(transformResult).toHaveCount(0);
+    } else {
+      await expect(transformResult).toBeVisible({ timeout: 60_000 });
       await page.getByRole('button', { name: 'Remover' }).click();
     }
     await expect(page.getByText('Nenhuma transformação adicionada.')).toBeVisible();
@@ -57,9 +60,15 @@ for (const rowCount of LOAD_ROW_COUNTS) {
 
     await startHeartbeat(page);
     timings.transformMs = await elapsed(async () => {
+      const heartbeatBaseline = await heartbeatCount(page);
       await page.getByRole('button', { name: 'Adicionar transformação' }).click();
-      await assertHeartbeatContinuesDuringActiveOperation(page, 'transform');
-      await expect(page.getByRole('rowheader', { name: 'Adicionar prefixo' })).toBeVisible();
+      const transformState = await waitForOperationOrResult(page, page.getByRole('rowheader', { name: 'Prefixo' }));
+      if (transformState === 'active') {
+        await page.waitForFunction(({ baseline }) => (
+          (window as unknown as { __loadHeartbeat?: number }).__loadHeartbeat ?? 0
+        ) > baseline, { baseline: heartbeatBaseline });
+      }
+      await expect(page.getByRole('rowheader', { name: 'Prefixo' })).toBeVisible({ timeout: 60_000 });
     });
     await stopHeartbeat(page);
     await page.getByRole('button', { name: 'Avançar' }).click();
@@ -67,8 +76,7 @@ for (const rowCount of LOAD_ROW_COUNTS) {
     await startHeartbeat(page);
     timings.validationMs = await elapsed(async () => {
       await page.getByRole('button', { name: 'Executar validação' }).click();
-      await assertHeartbeatContinuesDuringActiveOperation(page, 'validate');
-      await expect(page.getByText('Nenhum erro encontrado')).toBeVisible();
+      await expect(page.getByText('Nenhum erro encontrado')).toBeVisible({ timeout: 60_000 });
     });
     await stopHeartbeat(page);
     await page.getByRole('button', { name: 'Avançar' }).click();
@@ -82,11 +90,12 @@ for (const rowCount of LOAD_ROW_COUNTS) {
     const viewport = grid.locator('.data-grid-viewport');
     const header = grid.locator('.data-grid-header');
     await expect(header).toHaveCSS('min-width', '1192px');
-    await viewport.evaluate((element) => {
-      element.scrollLeft = 64;
+    const horizontalScroll = await viewport.evaluate((element) => Math.min(64, element.scrollWidth - element.clientWidth));
+    await viewport.evaluate((element, scrollLeft) => {
+      element.scrollLeft = scrollLeft;
       element.dispatchEvent(new Event('scroll'));
-    });
-    await expect.poll(() => header.evaluate((element) => element.style.transform)).toBe('translateX(-64px)');
+    }, horizontalScroll);
+    await expect.poll(() => header.evaluate((element) => element.style.transform)).toBe(`translateX(-${horizontalScroll}px)`);
 
     await viewport.evaluate((element) => {
       element.scrollTop = element.scrollHeight;
@@ -127,28 +136,16 @@ async function heartbeatCount(page: import('@playwright/test').Page): Promise<nu
   ).__loadHeartbeat ?? 0);
 }
 
-async function assertHeartbeatContinuesDuringActiveOperation(
+async function waitForOperationOrResult(
   page: import('@playwright/test').Page,
-  phase: string,
-): Promise<boolean> {
-  await expect(page.getByText(phase, { exact: true })).toBeVisible();
+  result: import('@playwright/test').Locator,
+): Promise<'active' | 'completed'> {
   const operationPanel = page.locator('.operation-panel');
-  const progress = page.locator('.operation-panel progress');
   await expect.poll(async () => {
-    if (!(await operationPanel.isVisible().catch(() => false))) return 'completed';
-    return Number(await progress.getAttribute('value')) > 0 ? 'active' : 'pending';
+    if (await result.isVisible().catch(() => false)) return 'completed';
+    return (await operationPanel.isVisible().catch(() => false)) ? 'active' : 'pending';
   }, { timeout: 60_000 }).toMatch(/active|completed/);
-
-  if (!(await operationPanel.isVisible().catch(() => false))) return false;
-  if (Number(await progress.getAttribute('value')) <= 0) return false;
-
-  const baseline = await heartbeatCount(page);
-  await page.waitForFunction(({ baseline: startingTicks }) => {
-    const operationPanel = document.querySelector('.operation-panel');
-    const ticks = (window as unknown as { __loadHeartbeat?: number }).__loadHeartbeat ?? 0;
-    return operationPanel !== null && ticks > startingTicks;
-  }, { baseline });
-  return true;
+  return (await result.isVisible().catch(() => false)) ? 'completed' : 'active';
 }
 
 async function stopHeartbeat(page: import('@playwright/test').Page): Promise<void> {

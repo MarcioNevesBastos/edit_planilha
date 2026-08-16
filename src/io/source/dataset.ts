@@ -1,6 +1,36 @@
 import { makeColumnId } from '../../domain/dataset/column-id';
 import type { CellValue, Dataset, DatasetColumn } from '../../domain/dataset/types';
 
+function parseCsvNumber(value: CellValue): number | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (trimmed === '' || /^[-+]?0\d+$/.test(trimmed)) return null;
+  const normalized = trimmed.includes(',')
+    ? trimmed.replace(/\./g, '').replace(',', '.')
+    : trimmed;
+  if (!/^[-+]?\d+(?:\.\d+)?$/.test(normalized)) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function shouldNormalizeCsvColumn(values: readonly CellValue[]): boolean {
+  const populated = values.filter((value) => value !== null && value !== '');
+  if (populated.length === 0) return false;
+  if (populated.some((value) => typeof value !== 'string' || /^[-+]?0\d+$/.test(value.trim()))) return false;
+  return populated.every((value) => parseCsvNumber(value) !== null);
+}
+
+export function normalizeCsvRows(dataRows: readonly (readonly CellValue[])[]): CellValue[][] {
+  const columnCount = dataRows[0]?.length ?? 0;
+  const columns = Array.from({ length: columnCount }, (_, columnIndex) => {
+    const values = dataRows.map((row) => row[columnIndex] ?? null);
+    return shouldNormalizeCsvColumn(values)
+      ? values.map(parseCsvNumber)
+      : values;
+  });
+  return dataRows.map((_, rowIndex) => columns.map((column) => column[rowIndex] ?? null));
+}
+
 export function createDataset(
   headerRow: readonly CellValue[],
   dataRows: readonly (readonly CellValue[])[],

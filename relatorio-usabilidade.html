@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Relatório de usabilidade — Preparar planilha</title>
+  <style>
+    :root { --ink:#17352a; --muted:#5c7065; --green:#176b45; --soft:#eff7f2; --line:#d7e4dc; --warn:#9a6819; --danger:#a3483f; }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--ink); background:#f4f7f5; font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
+    main { width:min(1120px,calc(100% - 32px)); margin:32px auto 64px; }
+    header, section, figure { background:#fff; border:1px solid var(--line); border-radius:16px; box-shadow:0 10px 30px #17352a0d; }
+    header { padding:32px; margin-bottom:18px; }
+    h1 { margin:0 0 8px; font-size:clamp(26px,4vw,42px); line-height:1.08; letter-spacing:-.04em; }
+    h2 { margin:0 0 14px; font-size:23px; letter-spacing:-.02em; }
+    h3 { margin:0 0 6px; font-size:17px; }
+    p { margin:8px 0; }
+    .eyebrow { margin:0 0 8px; color:var(--green); font-size:11px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; }
+    .meta { color:var(--muted); }
+    section { padding:26px 28px; margin:18px 0; }
+    .summary { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-top:22px; }
+    .metric { padding:15px; border:1px solid var(--line); border-radius:12px; background:#fbfdfb; }
+    .metric strong { display:block; color:var(--green); font-size:26px; line-height:1; }
+    .metric span { display:block; margin-top:7px; color:var(--muted); font-size:12px; }
+    .callout { padding:14px 16px; border-left:4px solid var(--green); background:var(--soft); }
+    .callout.warn { border-color:#d19b36; background:#fff9ed; }
+    .callout.danger { border-color:var(--danger); background:#fff6f5; }
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    th,td { padding:11px 10px; border-bottom:1px solid var(--line); vertical-align:top; text-align:left; }
+    th { color:#4c6458; background:#f1f6f3; font-size:12px; text-transform:uppercase; letter-spacing:.05em; }
+    tr:last-child td { border-bottom:0; }
+    .tag { display:inline-block; padding:3px 8px; border-radius:999px; color:#fff; background:var(--green); font-size:11px; font-weight:800; white-space:nowrap; }
+    .tag.high { background:#a3483f; } .tag.medium { background:#a16e1c; } .tag.low { background:#668274; }
+    .finding { padding:18px 0; border-top:1px solid var(--line); }
+    .finding:first-of-type { border-top:0; padding-top:0; }
+    .finding h3 { display:flex; align-items:center; gap:9px; }
+    code { padding:2px 5px; border-radius:5px; background:#edf3ef; font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    ul,ol { margin:9px 0 0; padding-left:22px; }
+    li+li { margin-top:5px; }
+    .screens { display:grid; grid-template-columns:repeat(2,1fr); gap:14px; }
+    figure { overflow:hidden; margin:0; }
+    figure img { display:block; width:100%; height:auto; background:#eff4f1; }
+    figcaption { padding:10px 12px; color:var(--muted); font-size:12px; }
+    .small { color:var(--muted); font-size:13px; }
+    @media (max-width:700px) { main { width:min(100% - 18px,1120px); margin-top:12px; } header,section { padding:20px; } .summary,.screens { grid-template-columns:1fr; } table { display:block; overflow-x:auto; white-space:normal; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">Teste de usabilidade · Chromium + Playwright</p>
+    <h1>Relatório de usabilidade<br>Preparar planilha</h1>
+    <p class="meta">Data da avaliação: 15/08/2026 · Superfície: <code>/app.html</code> · Viewports: 1280×720 e 390×844</p>
+    <div class="summary">
+      <div class="metric"><strong>Boa</strong><span>base visual e acessibilidade estrutural</span></div>
+      <div class="metric"><strong>10</strong><span>etapas exibidas no fluxo completo</span></div>
+      <div class="metric"><strong>25</strong><span>ações observadas no roteiro com modelo</span></div>
+      <div class="metric"><strong>13</strong><span>ações no roteiro sem modelo separado</span></div>
+    </div>
+  </header>
+
+  <section>
+    <h2>Conclusão executiva</h2>
+    <p>O sistema é coerente, visualmente limpo e consegue conduzir um usuário que já conhece a tarefa. O maior custo está no fluxo longo: o usuário precisa atravessar dez etapas, revisar mapeamentos individualmente, configurar uma transformação manualmente e rolar a página para alcançar ações importantes.</p>
+    <p>O principal problema funcional percebido foi a importação de CSV: valores numéricos chegam como texto, gerando erros de validação previsíveis e obrigando o usuário a criar uma conversão manual. Esse ponto deve ser priorizado porque transforma uma importação aparentemente válida em uma sequência de correção.</p>
+    <div class="callout"><strong>Correções aplicadas:</strong> normalização numérica segura no CSV, progresso inicial imediato nas operações e orientação visual do stepper no mobile. Permanecem oportunidades de reduzir etapas e densidade.</div>
+  </section>
+
+  <section>
+    <h2>Como a avaliação foi feita</h2>
+    <ul>
+      <li>Inspeção da estrutura do aplicativo, componentes e testes existentes.</li>
+      <li>Roteiro Playwright do fluxo completo: CSV → modelo XLSX → destino → mapeamento → transformação → validação → prévia → modo de gravação → resumo → exportação.</li>
+      <li>Verificação em desktop e mobile, com screenshots, DOM acessível, estados dos controles, overflow, título, headings e erros de console.</li>
+      <li>Execução dos testes E2E de carga: 3 passaram nos cenários de 10.000, 50.000 e 100.000 linhas.</li>
+      <li>Verificação adicional: <code>npm run typecheck</code>, <code>npm run build</code> e <code>npm test</code> passaram; a suíte unitária terminou com 219/219 testes.</li>
+      <li>O Browser plugin não estava disponível; foi utilizado Playwright local com Chromium, conforme permitido pelo roteiro de teste.</li>
+    </ul>
+    <p class="small">A avaliação mede a experiência observável e não substitui entrevistas com usuários reais, testes com leitores de tela ou benchmark em máquinas de produção.</p>
+  </section>
+
+  <section>
+    <h2>Mapa do esforço observado</h2>
+    <table>
+      <thead><tr><th>Roteiro</th><th>Etapas</th><th>Ações observadas</th><th>Leitura de usabilidade</th></tr></thead>
+      <tbody>
+        <tr><td>Com modelo externo</td><td>10</td><td>25</td><td>Completo, porém exige decisões em todas as telas e correção manual de tipo.</td></tr>
+        <tr><td>Sem modelo separado</td><td>10 exibidas, 2 automáticas</td><td>13</td><td>Melhor caminho para dados simples; reduz aproximadamente 48% das ações do roteiro.</td></tr>
+      </tbody>
+    </table>
+    <p class="small">A contagem inclui uploads, seleções, preenchimentos, botões e escolhas de exportação do roteiro automatizado; não inclui rolagens nem espera de processamento.</p>
+  </section>
+
+  <section>
+    <h2>Pontos favoráveis</h2>
+    <ul>
+      <li>Hierarquia visual consistente: título da etapa, descrição, conteúdo e rodapé de navegação.</li>
+      <li>Boa comunicação de estado: etapa atual, etapas visitadas, progresso, contagens de linhas e mensagens de validação.</li>
+      <li>Controles com nomes acessíveis: upload, abas, radios, filtros, tabelas e botões foram localizados por role/label no Playwright.</li>
+      <li>O primeiro viewport mobile não apresentou overflow horizontal do documento; os botões principais permaneceram utilizáveis.</li>
+      <li>O fluxo completo passou sem erros de console, warnings de console ou exceções de página no roteiro auditado.</li>
+      <li>O grid de prévia apresenta filtros claros por status e expõe as contagens de linhas válidas, com erro e totais.</li>
+      <li>O modo sem modelo aproveita automações existentes e é uma boa base para um caminho simplificado.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Pontos a melhorar</h2>
+
+    <article class="finding">
+      <h3><span class="tag high">ALTA</span> CSV numérico exige correção manual</h3>
+      <p><strong>O que o usuário vê:</strong> um CSV com valores como <code>1</code> e <code>2</code> parece válido, mas a validação acusa “É esperado um valor do tipo número”. O usuário precisa ir até Transformações, escolher “Converter número”, selecionar a coluna, informar o separador e adicionar a transformação.</p>
+      <p><strong>Evidência:</strong> o roteiro sem a transformação produziu 2 erros na coluna ID; após adicionar “Converter número” com separador <code>.</code>, a prévia mostrou 2 linhas válidas e 0 com erro.</p>
+      <p><strong>Causa provável:</strong> <code>src/io/source/read-csv.ts</code> preserva o CSV como texto e <code>src/io/source/dataset.ts</code> classifica tipos pela classe JavaScript recebida. A detecção de tipo não converte números representados por texto.</p>
+      <p><strong>Correção aplicada:</strong> colunas CSV consistentemente numéricas agora são convertidas durante a leitura, inclusive formato decimal com vírgula. Valores com zeros à esquerda e colunas mistas permanecem texto; os casos têm testes unitários.</p>
+      <p><strong>Como melhorar:</strong></p>
+      <ol><li>Detectar números com separador local durante a importação, sem converter valores ambíguos automaticamente.</li><li>Exibir uma prévia “ID será interpretado como número” com opção de confirmar.</li><li>Se a validação encontrar apenas erro de tipo conversível, oferecer “Corrigir automaticamente” na própria mensagem.</li><li>Manter o valor original para exportação rejeitada e permitir desfazer.</li></ol>
+    </article>
+
+    <article class="finding">
+      <h3><span class="tag high">ALTA</span> Fluxo principal longo demais para uma tarefa recorrente</h3>
+      <p><strong>O que o usuário vê:</strong> o stepper exibe dez etapas, incluindo Destino, Mapeamento, Transformações, Validação, Prévia, Modo de gravação, Resumo e Exportar. Para um caso comum, o usuário repete “Avançar” várias vezes entre decisões reais.</p>
+      <p><strong>Impacto:</strong> aumenta carga cognitiva, torna difícil entender o que ainda falta e cria sensação de processo burocrático.</p>
+      <p><strong>Como melhorar:</strong></p>
+      <ol><li>Criar um caminho “Rápido” para o caso sem modelo: importar, revisar prévia, escolher gravação e exportar.</li><li>Combinar Destino + Mapeamento quando houver uma única tabela ou correspondência exata.</li><li>Oferecer “Aplicar sugestões e continuar” para mapeamentos de confiança alta.</li><li>Mostrar as etapas avançadas sob “Revisar configurações”, sem removê-las do modo detalhado.</li><li>Permitir que o usuário salve um perfil de importação com delimitador, tipos e mapeamentos já confirmados.</li></ol>
+    </article>
+
+    <article class="finding">
+      <h3><span class="tag medium">MÉDIA</span> Stepper mobile não comunica que é rolável</h3>
+      <p><strong>O que foi medido:</strong> em 390 px, o stepper tem área visível de 370 px e conteúdo de 1160 px. O documento não tem overflow horizontal, mas apenas as primeiras etapas ficam visíveis no primeiro viewport.</p>
+      <p><strong>Risco:</strong> o usuário pode interpretar as três etapas visíveis como o conjunto completo, principalmente porque não há indicador visual de continuação.</p>
+      <p><strong>Correção aplicada:</strong> foi incluída a indicação “Deslize para ver as etapas” em viewports estreitos. Como evolução, o stepper pode ser reduzido à etapa atual com próxima/anterior ou deslocado automaticamente.</p>
+    </article>
+
+    <article class="finding">
+      <h3><span class="tag medium">MÉDIA</span> Ações importantes ficam abaixo da dobra</h3>
+      <p><strong>O que foi observado:</strong> em 1280×720 há overflow vertical desde a primeira tela. Na tela Exportar, a primeira captura mostra contagens e risco, mas as opções de relatório e o botão “Exportar .xlsx” ficam abaixo da dobra.</p>
+      <p><strong>Como melhorar:</strong> manter o rodapé de ações sticky também em desktop, mostrar um resumo compacto da decisão pendente e usar “Continuar para ação”/scroll-to-action depois que riscos e opções forem carregados.</p>
+    </article>
+
+    <article class="finding">
+      <h3><span class="tag medium">MÉDIA</span> Validação expõe complexidade avançada cedo demais</h3>
+      <p><strong>O que o usuário vê:</strong> Regras detectadas, Regras adicionadas, busca, filtro de severidade, tabela, impacto e Validações condicionais aparecem no mesmo fluxo. A tela é semanticamente correta, mas visualmente densa.</p>
+      <p><strong>Como melhorar:</strong> priorizar o resumo “X regras detectadas / Y linhas afetadas” e o botão Executar validação; mover matriz condicional e editor avançado para painéis recolhidos; após a execução, focar automaticamente o primeiro erro ou a mensagem de sucesso.</p>
+    </article>
+
+    <article class="finding">
+      <h3><span class="tag low">BAIXA</span> Ações em lote aparecem duplicadas no Mapeamento</h3>
+      <p>“Aceitar todos” e “Ignorar todos” aparecem acima e abaixo da tabela. A redundância pode ajudar tabelas longas, mas em conjuntos pequenos amplia o ruído e aumenta o número de controles visíveis para 25.</p>
+      <p><strong>Como melhorar:</strong> manter uma única barra sticky ou fixá-la no topo da tabela; pedir confirmação apenas para “Ignorar todos” e oferecer “Aceitar sugestões de alta confiança” como ação mais segura.</p>
+    </article>
+
+    <article class="finding">
+      <h3><span class="tag medium">MÉDIA</span> Carga alta precisa de feedback mensurável</h3>
+      <p><strong>Evidência inicial:</strong> os testes E2E originais falharam por expectativas obsoletas de seletor, rolagem e sincronização; a operação também começava com total zero no painel.</p>
+      <p><strong>Correção aplicada:</strong> o painel agora recebe o total estimado imediatamente para transformações, validação e planejamento. Os testes foram ajustados para aguardar resultado real, respeitar o limite de rolagem e validar cancelamento sem corrida de estado. A matriz 10k/50k/100k passou.</p>
+      <p><strong>Próxima melhoria:</strong> exibir tempo decorrido/estimado e medir percentis por volume em máquina de referência.</p>
+    </article>
+  </section>
+
+  <section>
+    <h2>Plano de melhoria recomendado</h2>
+    <table>
+      <thead><tr><th>Prioridade</th><th>Ação</th><th>Resultado esperado</th><th>Critério de aceite</th></tr></thead>
+      <tbody>
+        <tr><td><span class="tag">CONCLUÍDO</span></td><td>Normalização numérica segura no CSV.</td><td>Menos erros artificiais e menos transformações obrigatórias.</td><td>CSV numérico consistente chega à prévia como número; códigos com zeros à esquerda continuam texto.</td></tr>
+        <tr><td><span class="tag high">P1</span></td><td>Caminho rápido sem modelo e combinação de destino/mapeamento para casos óbvios.</td><td>Redução de decisões e tempo até a exportação.</td><td>Fluxo comum conclui sem atravessar telas sem decisão real.</td></tr>
+        <tr><td><span class="tag medium">P1</span></td><td>Stepper mobile compacto e rodapé de ação persistente.</td><td>Maior orientação e menos rolagem exploratória.</td><td>Etapa atual, próxima ação e botão principal permanecem visíveis em 390×844.</td></tr>
+        <tr><td><span class="tag medium">P2</span></td><td>Colapsar recursos avançados de validação e reduzir duplicação do mapeamento.</td><td>Menor densidade visual e foco na tarefa principal.</td><td>Usuário iniciante vê primeiro somente resumo, execução e resultado.</td></tr>
+        <tr><td><span class="tag medium">P2</span></td><td>Instrumentar operações grandes com progresso, ETA e benchmark.</td><td>Menor sensação de congelamento.</td><td>10k/50k/100k têm progresso observável, cancelamento e limites documentados.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Matriz de verificação</h2>
+    <table>
+      <thead><tr><th>Verificação</th><th>Resultado</th><th>Evidência</th></tr></thead>
+      <tbody>
+        <tr><td>Identidade da página</td><td><span class="tag">PASSOU</span></td><td>Título “Preparar planilha” e heading H1 presentes.</td></tr>
+        <tr><td>Conteúdo não vazio</td><td><span class="tag">PASSOU</span></td><td>Origem renderiza upload, descrição, stepper e navegação.</td></tr>
+        <tr><td>Overflow horizontal desktop/mobile</td><td><span class="tag">PASSOU</span></td><td>Documento: 1280 px em desktop e 390 px em mobile.</td></tr>
+        <tr><td>Stepper mobile</td><td><span class="tag">PASSOU</span></td><td>Indicação “Deslize para ver as etapas” adicionada para áreas estreitas.</td></tr>
+        <tr><td>Console e exceções no roteiro</td><td><span class="tag">PASSOU</span></td><td>0 erros de console, 0 warnings e 0 page errors no fluxo auditado.</td></tr>
+        <tr><td>Fluxo principal</td><td><span class="tag">PASSOU</span></td><td>CSV + modelo + transformação + validação + prévia + exportação alcançados.</td></tr>
+        <tr><td>Carga 10k/50k/100k</td><td><span class="tag">PASSOU</span></td><td>3/3 cenários passaram após correção de sincronização, limites de rolagem e progresso inicial.</td></tr>
+        <tr><td>Suíte unitária</td><td><span class="tag">PASSOU</span></td><td>219/219 testes passaram com limite de 30s para fluxos de interface extensos.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Registro visual</h2>
+    <div class="screens">
+      <figure><img src="relatorio-usabilidade-assets/initial-desktop.png" alt="Tela inicial em desktop"><figcaption>Desktop: base visual clara; rodapé começa abaixo da dobra em 720 px.</figcaption></figure>
+      <figure><img src="relatorio-usabilidade-assets/initial-mobile.png" alt="Tela inicial em mobile"><figcaption>Mobile: controles principais cabem; stepper mostra somente parte das etapas.</figcaption></figure>
+      <figure><img src="relatorio-usabilidade-assets/mapping.png" alt="Tela de mapeamento"><figcaption>Mapeamento: boa leitura de confiança, mas muitos comandos repetidos.</figcaption></figure>
+      <figure><img src="relatorio-usabilidade-assets/validation.png" alt="Tela de validação"><figcaption>Validação: recursos avançados competem com a ação principal.</figcaption></figure>
+      <figure><img src="relatorio-usabilidade-assets/preview.png" alt="Tela de prévia"><figcaption>Prévia: filtros e contagens tornam o resultado auditável.</figcaption></figure>
+      <figure><img src="relatorio-usabilidade-assets/export.png" alt="Tela de exportação"><figcaption>Exportação: confirmação e botão final ficam abaixo da primeira dobra.</figcaption></figure>
+    </div>
+  </section>
+
+  <section>
+    <h2>Limitações</h2>
+    <ul>
+      <li>A avaliação foi automatizada em Chromium; não cobre Firefox, Safari, leitores de tela ou teclado completo.</li>
+      <li>Não houve entrevistas nem medição com usuários reais.</li>
+      <li>As conclusões de desempenho devem ser repetidas em ambiente de referência antes de definir metas.</li>
+      <li>O limite de testes de interface foi ampliado para 30s porque os fluxos de workflow excediam o padrão de 5s sem falha funcional.</li>
+      <li>As correções aplicadas foram verificadas por testes unitários, integração, build, typecheck e Playwright.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>
