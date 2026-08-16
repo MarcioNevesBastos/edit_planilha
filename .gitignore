@@ -2,3 +2,4 @@
 /dist
 /docs
 package-lock.json
+.eqc-jscpd-report
