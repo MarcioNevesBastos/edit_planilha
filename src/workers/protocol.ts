@@ -30,7 +30,7 @@ export type WorkerRequest =
   | ({ type: 'EXTRACT_DESTINATION'; templateBuffer: ArrayBuffer; sheetName: string; range: string } & WorkerRequestBase)
   | ({ type: 'PREPARE_OUTPUT_BASE'; mode: OutputBaseMode; sourceBuffer?: ArrayBuffer; columns: readonly DatasetColumn[] } & WorkerRequestBase)
   | ({ type: 'APPLY_TRANSFORMS'; dataset: Dataset; commands: readonly TransformCommand[] } & WorkerRequestBase)
-  | ({ type: 'VALIDATE'; dataset: Dataset; rules: readonly ValidationRule[] } & WorkerRequestBase)
+  | ({ type: 'VALIDATE'; dataset: Dataset; rules: readonly ValidationRule[]; referenceDatasets?: Readonly<Record<string, Dataset>> } & WorkerRequestBase)
   | ({ type: 'PLAN_WRITE'; input: WritePlanInput } & WorkerRequestBase)
   | ({ type: 'SCAN_EXPORT_RISKS'; templateBuffer: ArrayBuffer; input: Omit<ExportInput, 'package'> } & WorkerRequestBase)
   | ({ type: 'EXPORT'; templateBuffer: ArrayBuffer; input: Omit<ExportInput, 'package'> } & WorkerRequestBase);

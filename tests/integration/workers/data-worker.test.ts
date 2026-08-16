@@ -170,6 +170,45 @@ describe('data worker dispatcher', () => {
     expect(messages.some((message) => message.type === 'PROGRESS' && message.operationId === 'conditional-warning' && message.phase === 'validate')).toBe(true);
   });
 
+  it('validates relations with external datasets inside the worker', async () => {
+    const messages: WorkerResponse[] = [];
+    const dispatcher = createDataWorkerDispatcher((message) => messages.push(message));
+    const input: Dataset = {
+      columns: [{ id: 'code__1', header: 'Code', sourceIndex: 0, detectedType: 'string' }],
+      rows: [row('incoming-1', 2, { code__1: 'A' }), row('incoming-2', 3, { code__1: 'B' })],
+    };
+    const catalog: Dataset = {
+      columns: [{ id: 'catalog_code__1', header: 'Code', sourceIndex: 0, detectedType: 'string' }],
+      rows: [row('catalog-1', 2, { catalog_code__1: 'A' })],
+    };
+
+    await dispatcher.dispatch({
+      type: 'VALIDATE',
+      operationId: 'relation-validation',
+      dataset: input,
+      referenceDatasets: { catalog },
+      rules: [{
+        type: 'relation',
+        source: 'catalog',
+        leftColumnIds: ['code__1'],
+        rightColumnIds: ['catalog_code__1'],
+        minMatches: 1,
+      }],
+    });
+
+    expect(messages).toContainEqual(expect.objectContaining({
+      type: 'RESULT',
+      operationId: 'relation-validation',
+      result: expect.objectContaining({
+        type: 'VALIDATE',
+        validationResult: expect.objectContaining({
+          isValid: false,
+          issues: [expect.objectContaining({ rowId: 'incoming-2', code: 'relation' })],
+        }),
+      }),
+    }));
+  });
+
   it('runs workbook sheet listing, indexing, and destination extraction inside the worker', async () => {
     const messages: WorkerResponse[] = [];
     const dispatcher = createDataWorkerDispatcher((message) => messages.push(message));

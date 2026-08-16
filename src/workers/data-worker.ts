@@ -240,13 +240,14 @@ async function dispatchRequest(
         rule.type === 'comparison'
         || rule.type === 'expression'
         || rule.type === 'reference'
+        || rule.type === 'relation'
         || rule.when !== undefined,
       );
       if (requiresFullValidation) {
         ensureNotCancelled(request.operationId);
-        return { type: 'VALIDATE', validationResult: validateDataset(request.dataset, request.rules) };
+        return { type: 'VALIDATE', validationResult: validateDataset(request.dataset, request.rules, request.referenceDatasets) };
       }
-      const localRules = request.rules.filter((rule) => rule.type !== 'unique' && rule.type !== 'compositeUnique');
+      const localRules = request.rules.filter((rule) => rule.type !== 'unique' && rule.type !== 'compositeUnique' && rule.type !== 'relation');
       const issues = [] as ReturnType<typeof validateRow>;
       await runBatches(
         request.operationId,

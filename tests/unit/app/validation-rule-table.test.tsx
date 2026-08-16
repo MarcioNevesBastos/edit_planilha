@@ -7,6 +7,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ValidationRuleTable } from '../../../src/app/components/ValidationRuleTable';
 import type { Dataset } from '../../../src/domain/dataset/types';
+import type { ReferenceDatasetOption } from '../../../src/app/components/ValidationRuleEditor';
 
 const dataset: Dataset = {
   columns: [
@@ -15,6 +16,17 @@ const dataset: Dataset = {
   ],
   rows: [],
 };
+
+const referenceSources: ReferenceDatasetOption[] = [{
+  id: 'template:Catalogo',
+  label: 'Modelo · Catálogo',
+  kind: 'template',
+  sheetName: 'Catalogo',
+  dataset: {
+    columns: [{ id: 'catalog_code__1', header: 'Código', sourceIndex: 0, detectedType: 'string' }],
+    rows: [],
+  },
+}];
 
 describe('ValidationRuleTable', () => {
   afterEach(() => cleanup());
@@ -75,5 +87,122 @@ describe('ValidationRuleTable', () => {
 
     expect(screen.getByLabelText('Coluna-alvo')).toHaveValue('end__1');
     expect(screen.getByText('A configuração anterior será preservada quando compatível.')).toBeInTheDocument();
+  });
+
+  it('creates an integer rule from the grouped definition selector', async () => {
+    const user = userEvent.setup();
+    const onAddRule = vi.fn();
+    render(
+      <ValidationRuleTable
+        dataset={dataset}
+        columns={dataset.columns}
+        rules={[]}
+        issues={[]}
+        disabled={false}
+        onAddRule={onAddRule}
+        onReplaceRule={vi.fn()}
+        onRemoveRule={vi.fn()}
+        onRun={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Adicionar regra' }));
+    expect(screen.getByRole('group', { name: 'Tipo e formato' })).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText('Tipo de definição'), 'integer');
+    await user.click(screen.getByRole('button', { name: 'Salvar regra' }));
+
+    expect(onAddRule).toHaveBeenCalledWith(expect.objectContaining({ type: 'integer', columnId: 'start__1' }));
+  });
+
+  it('parses allowed values using the selected column type', async () => {
+    const user = userEvent.setup();
+    const onAddRule = vi.fn();
+    render(
+      <ValidationRuleTable
+        dataset={dataset}
+        columns={dataset.columns}
+        rules={[]}
+        issues={[]}
+        disabled={false}
+        onAddRule={onAddRule}
+        onReplaceRule={vi.fn()}
+        onRemoveRule={vi.fn()}
+        onRun={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Adicionar regra' }));
+    await user.selectOptions(screen.getByLabelText('Tipo de definição'), 'allowed');
+    await user.selectOptions(screen.getByLabelText('Coluna-alvo'), 'start__1');
+    await user.type(screen.getByLabelText('Valores permitidos'), '1, 2');
+    await user.click(screen.getByRole('button', { name: 'Salvar regra' }));
+
+    expect(onAddRule).toHaveBeenCalledWith(expect.objectContaining({ allowedValues: [1, 2] }));
+  });
+
+  it('creates a relationship with an external source and exact cardinality', async () => {
+    const user = userEvent.setup();
+    const onAddRule = vi.fn();
+    render(
+      <ValidationRuleTable
+        dataset={dataset}
+        columns={dataset.columns}
+        rules={[]}
+        issues={[]}
+        disabled={false}
+        referenceSources={referenceSources}
+        onAddRule={onAddRule}
+        onReplaceRule={vi.fn()}
+        onRemoveRule={vi.fn()}
+        onRun={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Adicionar regra' }));
+    await user.selectOptions(screen.getByLabelText('Tipo de definição'), 'relation');
+    await user.selectOptions(screen.getByLabelText('Fonte do relacionamento'), 'template:Catalogo');
+    await user.selectOptions(screen.getByLabelText('Colunas atuais'), ['start__1']);
+    await user.selectOptions(screen.getByLabelText('Colunas da fonte'), ['catalog_code__1']);
+    await user.selectOptions(screen.getByLabelText('Cardinalidade'), 'exactlyOne');
+    await user.click(screen.getByRole('button', { name: 'Salvar regra' }));
+
+    expect(onAddRule).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'relation',
+      source: 'template:Catalogo',
+      leftColumnIds: ['start__1'],
+      rightColumnIds: ['catalog_code__1'],
+      minMatches: 1,
+      maxMatches: 1,
+    }));
+  });
+
+  it('supports a custom relationship cardinality', async () => {
+    const user = userEvent.setup();
+    const onAddRule = vi.fn();
+    render(
+      <ValidationRuleTable
+        dataset={dataset}
+        columns={dataset.columns}
+        rules={[]}
+        issues={[]}
+        disabled={false}
+        referenceSources={referenceSources}
+        onAddRule={onAddRule}
+        onReplaceRule={vi.fn()}
+        onRemoveRule={vi.fn()}
+        onRun={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Adicionar regra' }));
+    await user.selectOptions(screen.getByLabelText('Tipo de definição'), 'relation');
+    await user.selectOptions(screen.getByLabelText('Cardinalidade'), 'custom');
+    await user.clear(screen.getByLabelText('Mínimo de correspondências'));
+    await user.type(screen.getByLabelText('Mínimo de correspondências'), '2');
+    await user.clear(screen.getByLabelText('Máximo de correspondências'));
+    await user.type(screen.getByLabelText('Máximo de correspondências'), '4');
+    await user.click(screen.getByRole('button', { name: 'Salvar regra' }));
+
+    expect(onAddRule).toHaveBeenCalledWith(expect.objectContaining({ minMatches: 2, maxMatches: 4 }));
   });
 });

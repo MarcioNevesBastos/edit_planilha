@@ -5,6 +5,7 @@ import { analyzeValidationRules } from '../../domain/validation/rule-analysis';
 import { ConditionalMatrixEditor } from './ConditionalMatrixEditor';
 import { SearchableChecklist } from './SearchableChecklist';
 import { ValidationRuleTable } from './ValidationRuleTable';
+import type { ReferenceDatasetOption } from './ValidationRuleEditor';
 
 interface ValidationPanelProps {
   dataset: Dataset;
@@ -18,6 +19,7 @@ interface ValidationPanelProps {
   onRemoveRule(index: number): void;
   onRun(): void;
   onSelectIssue(issue: ValidationIssue): void;
+  referenceSources?: readonly ReferenceDatasetOption[];
 }
 
 function ruleLabel(rule: ValidationRule, columns: readonly DatasetColumn[]): string {
@@ -39,12 +41,18 @@ function ruleLabel(rule: ValidationRule, columns: readonly DatasetColumn[]): str
     const target = columns.find((column) => column.id === rule.referenceColumnId)?.header ?? rule.referenceColumnId;
     return `${source}: referência ${rule.mode === 'exists' ? 'existente em' : 'ausente em'} ${target}`;
   }
+  if (rule.type === 'relation') return `${rule.leftColumnIds.map((id) => columns.find((column) => column.id === id)?.header ?? id).join(' + ')}: relacionamento`;
   const columnIds = rule.type === 'compositeUnique' ? rule.columnIds : [rule.columnId];
   const names = columnIds.map((id) => columns.find((column) => column.id === id)?.header ?? id).join(' + ');
   switch (rule.type) {
     case 'required': return `${names}: obrigatório`;
+    case 'empty': return `${names}: deve estar vazio`;
     case 'type': return `${names}: tipo ${rule.valueType}`;
+    case 'integer': return `${names}: número inteiro`;
+    case 'numberPrecision': return `${names}: precisão decimal`;
+    case 'format': return `${names}: formato ${rule.format}`;
     case 'allowed': return `${names}: lista permitida`;
+    case 'notAllowed': return `${names}: lista bloqueada`;
     case 'numberRange': return `${names}: intervalo numérico`;
     case 'dateRange': return `${names}: intervalo de datas`;
     case 'stringLength': return `${names}: tamanho do texto`;
@@ -65,6 +73,7 @@ export function ValidationPanel({
   onRemoveRule,
   onRun,
   onSelectIssue,
+  referenceSources = [],
 }: ValidationPanelProps) {
   const [matrixKeyColumnIds, setMatrixKeyColumnIds] = useState<string[]>(columns[0] ? [columns[0].id] : []);
   const [matrixDependentColumnIds, setMatrixDependentColumnIds] = useState<string[]>(columns[1] ? [columns[1].id] : []);
@@ -106,6 +115,7 @@ export function ValidationPanel({
         onRemoveRule={(simpleIndex) => onRemoveRule(simpleRules[simpleIndex]?.index ?? simpleIndex)}
         onRun={onRun}
         configurationErrors={configurationErrors}
+        referenceSources={referenceSources}
       />
       <section className="panel-section conditional-matrices-section">
         <h3>Validações condicionais</h3>

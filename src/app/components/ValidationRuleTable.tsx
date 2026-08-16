@@ -3,7 +3,7 @@ import type { Dataset, DatasetColumn } from '../../domain/dataset/types';
 import { validateDataset } from '../../domain/validation/validate-row';
 import { getValidationRuleId } from '../../domain/validation/rule-analysis';
 import type { ValidationConfigurationError, ValidationIssue, ValidationRule } from '../../domain/validation/types';
-import { ValidationRuleEditor, createDefaultValidationRule } from './ValidationRuleEditor';
+import { ValidationRuleEditor, createDefaultValidationRule, type ReferenceDatasetOption } from './ValidationRuleEditor';
 
 interface ValidationRuleTableProps {
   dataset: Dataset;
@@ -16,6 +16,7 @@ interface ValidationRuleTableProps {
   onRemoveRule(index: number): void;
   onRun(): void;
   configurationErrors?: readonly ValidationConfigurationError[];
+  referenceSources?: readonly ReferenceDatasetOption[];
 }
 
 function columnName(id: string, columns: readonly DatasetColumn[]): string {
@@ -26,6 +27,7 @@ function ruleLabel(rule: ValidationRule, columns: readonly DatasetColumn[]): str
   if (rule.type === 'comparison') return `${rule.left.type === 'column' ? columnName(rule.left.columnId, columns) : 'valor'} ${rule.operator} ${rule.right.type === 'column' ? columnName(rule.right.columnId, columns) : 'valor'}`;
   if (rule.type === 'expression') return 'Expressão segura';
   if (rule.type === 'reference') return `${columnName(rule.columnId, columns)} → ${columnName(rule.referenceColumnId, columns)}`;
+  if (rule.type === 'relation') return `${rule.leftColumnIds.map((id) => columnName(id, columns)).join(' + ')} → relacionamento`;
   if (rule.type === 'conditionalMatrix') return 'Matriz condicional';
   const ids = rule.type === 'compositeUnique' ? rule.columnIds : [rule.columnId];
   return ids.map((id) => columnName(id, columns)).join(' + ');
@@ -34,8 +36,13 @@ function ruleLabel(rule: ValidationRule, columns: readonly DatasetColumn[]): str
 function definitionLabel(rule: ValidationRule): string {
   switch (rule.type) {
     case 'required': return 'Obrigatório';
+    case 'empty': return 'Deve estar vazio';
     case 'type': return `Tipo: ${rule.valueType}`;
+    case 'integer': return 'Número inteiro';
+    case 'numberPrecision': return `Precisão: ${rule.decimalPlaces} casas`;
+    case 'format': return `Formato: ${rule.format}`;
     case 'allowed': return 'Lista permitida';
+    case 'notAllowed': return 'Lista bloqueada';
     case 'numberRange': return 'Intervalo numérico';
     case 'dateRange': return 'Intervalo de datas';
     case 'stringLength': return 'Tamanho do texto';
@@ -44,6 +51,7 @@ function definitionLabel(rule: ValidationRule): string {
     case 'comparison': return 'Comparação';
     case 'expression': return 'Expressão';
     case 'reference': return 'Referência';
+    case 'relation': return 'Relacionamento';
     case 'conditionalMatrix': return 'Matriz';
   }
 }
@@ -59,12 +67,17 @@ export function ValidationRuleTable({
   onRemoveRule,
   onRun,
   configurationErrors = [],
+  referenceSources = [],
 }: ValidationRuleTableProps) {
   const [draft, setDraft] = useState<ValidationRule | null>(null);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [search, setSearch] = useState('');
   const [severity, setSeverity] = useState<'all' | 'error' | 'warning'>('all');
-  const preview = useMemo(() => validateDataset(dataset, rules), [dataset, rules]);
+  const referenceDatasetMap = useMemo(
+    () => Object.fromEntries(referenceSources.map(({ id, dataset: sourceDataset }) => [id, sourceDataset])),
+    [referenceSources],
+  );
+  const preview = useMemo(() => validateDataset(dataset, rules, referenceDatasetMap), [dataset, referenceDatasetMap, rules]);
   const allConfigurationErrors = [...configurationErrors, ...(preview.configurationErrors ?? [])];
   const impact = preview.ruleImpact ?? {};
   const visibleRules = rules.flatMap((rule, index) => {
@@ -117,7 +130,7 @@ export function ValidationRuleTable({
         </table>
         {visibleRules.length === 0 ? <p>Nenhuma regra encontrada.</p> : null}
       </div>
-      {draft ? <ValidationRuleEditor dataset={dataset} columns={columns} value={draft} disabled={disabled} onSave={saveRule} onCancel={() => { setDraft(null); setEditingIndex(null); }} /> : null}
+      {draft ? <ValidationRuleEditor dataset={dataset} columns={columns} value={draft} disabled={disabled} referenceSources={referenceSources} onSave={saveRule} onCancel={() => { setDraft(null); setEditingIndex(null); }} /> : null}
       {allConfigurationErrors.length > 0 ? <div className="error-banner" role="alert"><strong>Corrija a configuração antes de executar.</strong>{allConfigurationErrors.map((error) => <p key={`${error.ruleId}-${error.message}`}>{error.message}</p>)}</div> : null}
       <div className="validation-impact-summary" aria-label="Prévia do impacto">
         <strong>Prévia do impacto</strong>
