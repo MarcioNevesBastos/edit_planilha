@@ -38,6 +38,7 @@ if [ "$complexity_status" -ne 0 ]; then
   fail_gate
 fi
 
+mkdir -p .eqc-jscpd-report || fail_gate
 duplication_output="$(npm run check:duplication 2>&1)"
 duplication_status=$?
 echo "$duplication_output"

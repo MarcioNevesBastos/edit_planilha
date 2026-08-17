@@ -27,6 +27,7 @@ Write-Output "EQC_COVERAGE=$($coverageValues -join ',')"
 & node '.github/quality/measure-complexity.mjs'
 if ($LASTEXITCODE -ne 0) { Write-Output 'EQC_QUALITY_GATE=FAIL'; exit 1 }
 
+New-Item -ItemType Directory -Force '.eqc-jscpd-report' | Out-Null
 & npm run check:duplication
 if ($LASTEXITCODE -ne 0) { Write-Output 'EQC_DUPLICATION=FAIL'; Write-Output 'EQC_QUALITY_GATE=FAIL'; exit 1 }
 $duplication = Get-Content '.eqc-jscpd-report/jscpd-report.json' -Raw | ConvertFrom-Json
