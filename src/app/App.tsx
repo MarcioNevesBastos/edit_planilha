@@ -47,11 +47,13 @@ import {
 } from './components/MappingGrid';
 import { Stepper, type WorkflowStepDefinition } from './components/Stepper';
 import { ValidationPanel } from './components/ValidationPanel';
+import type { ReferenceDatasetOption } from './components/ValidationRuleEditor';
 import { ConditionBuilder } from './components/ConditionBuilder';
 import { ValuePicker } from './components/ValuePicker';
 import { initialOperationTotal } from './operation-progress';
 import { createSessionStore, type BaseMode, type FileMetadata } from './state/session-store';
 import type { AutomaticDestination } from '../io/template/output-base';
+import { readSource } from '../io/source/read-source';
 
 const STEPS = [
   { id: 'source', label: 'Origem' },
@@ -406,6 +408,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   const [baseDataset, setBaseDataset] = useState<Dataset | null>(null);
   const [pendingSourceFile, setPendingSourceFile] = useState<File | null>(null);
   const [sourceSheets, setSourceSheets] = useState<string[]>([]);
+  const [referenceDatasets, setReferenceDatasets] = useState<Record<string, Dataset>>({});
   const [templateIndex, setTemplateIndex] = useState<WorkbookIndex | null>(null);
   const [destinationCandidates, setDestinationCandidates] = useState<DestinationCandidate[]>([]);
   const [destinationWarnings, setDestinationWarnings] = useState<string[]>([]);
@@ -444,6 +447,23 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
     () => session.dataset ? effectiveIncomingDataset(session.dataset, mappings) : null,
     [mappings, session.dataset],
   );
+  const referenceSources = useMemo<ReferenceDatasetOption[]>(() => {
+    const currentDataset = effectiveDataset ?? session.dataset;
+    const current: ReferenceDatasetOption[] = currentDataset ? [{
+      id: 'current',
+      label: 'Dados atuais',
+      kind: 'current',
+      dataset: currentDataset,
+    }] : [];
+    const external = Object.entries(referenceDatasets).map(([id, dataset]) => ({
+      id,
+      label: id.startsWith('template:') ? `Modelo · ${id.slice('template:'.length)}` : `Origem · ${id.slice('source:'.length)}`,
+      kind: id.startsWith('template:') ? 'template' as const : 'source' as const,
+      sheetName: id.slice(id.indexOf(':') + 1),
+      dataset,
+    }));
+    return [...current, ...external];
+  }, [effectiveDataset, referenceDatasets, session.dataset]);
   const automaticBaseFingerprint = useMemo(() => JSON.stringify({
     mode: session.baseMode,
     datasetRevision,
@@ -477,6 +497,44 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   const detectedRules = useMemo(() => session.dataset && templateDataset
     ? detectedValidationRules(session.dataset.columns, templateDataset.columns, mappings)
     : [], [mappings, session.dataset, templateDataset]);
+
+  useEffect(() => {
+    if (stepIndex !== 5) {
+      setReferenceDatasets({});
+      return;
+    }
+    let active = true;
+    const requests: Array<{ id: string; buffer: ArrayBuffer; metadata: FileMetadata; sheetName: string }> = [];
+    if (session.sourceFileBuffer && session.sourceFileMetadata && extension(session.sourceFileMetadata.name) === 'xlsx') {
+      sourceSheets.forEach((sheetName) => requests.push({
+        id: `source:${sheetName}`,
+        buffer: session.sourceFileBuffer!.slice(0),
+        metadata: session.sourceFileMetadata!,
+        sheetName,
+      }));
+    }
+    if (session.templateFileBuffer && session.templateMetadata && templateIndex) {
+      templateIndex.sheets.forEach(({ name }) => requests.push({
+        id: `template:${name}`,
+        buffer: session.templateFileBuffer!.slice(0),
+        metadata: session.templateMetadata!,
+        sheetName: name,
+      }));
+    }
+    setReferenceDatasets({});
+    void Promise.all(requests.map(async ({ id, buffer, metadata: fileMetadata, sheetName }) => {
+      try {
+        const file = new File([buffer], fileMetadata.name, { type: fileMetadata.type });
+        return [id, await readSource(file, { sheetName })] as const;
+      } catch {
+        return null;
+      }
+    })).then((loaded) => {
+      if (!active) return;
+      setReferenceDatasets(Object.fromEntries(loaded.filter((item): item is readonly [string, Dataset] => item !== null)));
+    });
+    return () => { active = false; };
+  }, [session.sourceFileBuffer, session.sourceFileMetadata, session.templateFileBuffer, session.templateMetadata, sourceSheets, stepIndex, templateIndex]);
 
   useEffect(() => {
     const worker = workerFactoryRef.current();
@@ -592,7 +650,6 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
           setBaseDataset(result.dataset);
           setDatasetRevision((current) => current + 1);
           setPendingSourceFile(null);
-          setSourceSheets([]);
           store.setState({
             sourceFileMetadata: metadata(file),
             sourceFileBuffer: stableBuffer,
@@ -616,6 +673,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
     const preflightId = beginPreflight();
     if (!preflightId) return;
     if (extension(file.name) === 'csv') {
+      setSourceSheets([]);
       await importSourceFile(file, undefined, preflightId);
       return;
     }
@@ -644,6 +702,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
 
   const selectBaseMode = useCallback((baseMode: BaseMode) => {
     setTemplateIndex(null);
+    setReferenceDatasets({});
     setDestinationCandidates([]);
     setDestinationWarnings([]);
     setSelectedDestination(null);
@@ -689,6 +748,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         onResult: (result) => {
           if (result.type !== 'INDEX_TEMPLATE') return;
           setTemplateIndex(result.index);
+          setReferenceDatasets({});
           setDestinationCandidates([]);
           setDestinationWarnings([]);
           setSelectedDestination(null);
@@ -830,9 +890,9 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   const revalidateCorrection = useCallback((dataset: Dataset, command: Extract<TransformCommand, { type: 'editCell' }>) => {
     if (!validationResult) return;
     const rules = [...detectedRules, ...userRules];
-    const nextIssues = validateDataset(dataset, rules).issues;
+    const nextIssues = validateDataset(dataset, rules, referenceDatasets).issues;
     setValidationResult({ isValid: nextIssues.every(({ severity }) => (severity ?? 'error') !== 'error'), issues: nextIssues });
-  }, [detectedRules, userRules, validationResult]);
+  }, [detectedRules, referenceDatasets, userRules, validationResult]);
 
   const editCell = useCallback((command: Extract<TransformCommand, { type: 'editCell' }>) => {
     const previous = [...commands];
@@ -858,6 +918,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
       operationId: id,
       dataset: effectiveDataset,
       rules: [...detectedRules, ...userRules],
+      referenceDatasets,
     }, 'Validando dados', {
       onResult: (result) => {
         if (result.type !== 'VALIDATE') return;
@@ -868,7 +929,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         setExported(false);
       },
     });
-  }, [detectedRules, effectiveDataset, operationId, runOperation, userRules]);
+  }, [detectedRules, effectiveDataset, operationId, referenceDatasets, runOperation, userRules]);
 
   const runWritePlanCore = useCallback((
     incoming: Dataset,
@@ -1308,6 +1369,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
               detectedRules={detectedRules}
               userRules={userRules}
               issues={validationResult?.issues ?? []}
+              referenceSources={referenceSources}
               disabled={workflowBusy}
               onAddRule={(rule) => {
                 store.setState({ validationRules: [...userRules, rule] });
@@ -2028,7 +2090,7 @@ const APP_STYLES = `
   .validation-rule-table td:last-child { white-space: nowrap; }
   .validation-rule-table td button { min-height: 30px; margin-right: 5px; padding: 5px 8px; border: 1px solid #cbd5d0; color: #355146; background: white; }
   .validation-rule-editor { display: grid; gap: 12px; padding: 16px; border: 1px solid #c9ddd1; border-radius: 11px; background: #f7fbf8; }
-  .validation-range-fields, .validation-comparison-fields, .validation-reference-fields, .validation-expression-children { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .validation-range-fields, .validation-comparison-fields, .validation-reference-fields, .validation-relation-fields, .validation-expression-children { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .validation-comparison-fields { grid-template-columns: repeat(4, minmax(150px, 1fr)); }
   .validation-expression-node, .validation-expression-operand { display: grid; gap: 10px; padding: 12px; border: 1px solid #d5e1da; border-radius: 10px; background: white; }
   .validation-expression-node legend, .validation-expression-operand legend { padding: 0 5px; color: #3d5f4e; font-size: 12px; font-weight: 800; }

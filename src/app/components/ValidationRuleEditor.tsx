@@ -3,31 +3,46 @@ import type { CellValue, Dataset, DatasetColumn } from '../../domain/dataset/typ
 import type { Expression, TransformConditionNode } from '../../domain/transforms/types';
 import { ConditionBuilder } from './ConditionBuilder';
 import { ValidationExpressionBuilder } from './ValidationExpressionBuilder';
-import type { ValidationRule, ValidationRuleMetadata } from '../../domain/validation/types';
+import type { ValidationFormat, ValidationRule, ValidationRuleMetadata } from '../../domain/validation/types';
 
 export type EditableValidationRuleType = Exclude<ValidationRule['type'], 'conditionalMatrix'>;
+
+export interface ReferenceDatasetOption {
+  id: string;
+  label: string;
+  kind: 'current' | 'source' | 'template';
+  sheetName?: string;
+  dataset: Dataset;
+}
 
 interface ValidationRuleEditorProps {
   dataset: Dataset;
   columns: readonly DatasetColumn[];
   value: ValidationRule;
   disabled: boolean;
+  referenceSources?: readonly ReferenceDatasetOption[];
   onSave(rule: ValidationRule): void;
   onCancel(): void;
 }
 
-const DEFINITION_OPTIONS: Array<{ value: EditableValidationRuleType; label: string }> = [
-  { value: 'required', label: 'Obrigatório' },
-  { value: 'type', label: 'Tipo' },
-  { value: 'allowed', label: 'Lista permitida' },
-  { value: 'numberRange', label: 'Intervalo numérico' },
-  { value: 'dateRange', label: 'Intervalo de datas' },
-  { value: 'stringLength', label: 'Tamanho do texto' },
-  { value: 'unique', label: 'Valor único' },
-  { value: 'compositeUnique', label: 'Chave composta' },
-  { value: 'comparison', label: 'Comparação entre colunas' },
-  { value: 'expression', label: 'Expressão' },
-  { value: 'reference', label: 'Referência entre registros' },
+const DEFINITION_OPTIONS: Array<{ group: string; value: EditableValidationRuleType; label: string }> = [
+  { group: 'Presença', value: 'required', label: 'Obrigatório' },
+  { group: 'Presença', value: 'empty', label: 'Deve estar vazio' },
+  { group: 'Tipo e formato', value: 'type', label: 'Tipo' },
+  { group: 'Tipo e formato', value: 'integer', label: 'Número inteiro' },
+  { group: 'Tipo e formato', value: 'numberPrecision', label: 'Precisão decimal' },
+  { group: 'Tipo e formato', value: 'format', label: 'Formato' },
+  { group: 'Listas', value: 'allowed', label: 'Lista permitida' },
+  { group: 'Listas', value: 'notAllowed', label: 'Lista bloqueada' },
+  { group: 'Intervalos', value: 'numberRange', label: 'Intervalo numérico' },
+  { group: 'Intervalos', value: 'dateRange', label: 'Intervalo de datas' },
+  { group: 'Intervalos', value: 'stringLength', label: 'Tamanho do texto' },
+  { group: 'Unicidade', value: 'unique', label: 'Valor único' },
+  { group: 'Unicidade', value: 'compositeUnique', label: 'Chave composta' },
+  { group: 'Colunas', value: 'comparison', label: 'Comparação entre colunas' },
+  { group: 'Avançado', value: 'expression', label: 'Expressão' },
+  { group: 'Relacionamentos', value: 'reference', label: 'Referência simples' },
+  { group: 'Relacionamentos', value: 'relation', label: 'Relacionamento entre registros' },
 ];
 
 const metadata = (rule: ValidationRule): ValidationRuleMetadata => ({
@@ -56,8 +71,13 @@ export function createDefaultValidationRule(type: EditableValidationRuleType, co
   const columnId = firstColumn(columns);
   switch (type) {
     case 'required': return { type, columnId };
+    case 'empty': return { type, columnId };
     case 'type': return { type, columnId, valueType: 'string' };
+    case 'integer': return { type, columnId };
+    case 'numberPrecision': return { type, columnId, decimalPlaces: 0 };
+    case 'format': return { type, columnId, format: 'email' };
     case 'allowed': return { type, columnId, allowedValues: [] };
+    case 'notAllowed': return { type, columnId, disallowedValues: [] };
     case 'numberRange': return { type, columnId };
     case 'dateRange': return { type, columnId };
     case 'stringLength': return { type, columnId };
@@ -66,6 +86,7 @@ export function createDefaultValidationRule(type: EditableValidationRuleType, co
     case 'comparison': return { type, left: { type: 'column', columnId }, operator: 'equals', right: { type: 'literal', value: null } };
     case 'expression': return { type, expression: defaultExpression(columns) };
     case 'reference': return { type, columnId, referenceColumnId: columnId, mode: 'exists' };
+    case 'relation': return { type, source: 'current', leftColumnIds: columnId ? [columnId] : [], rightColumnIds: columnId ? [columnId] : [], minMatches: 1 };
   }
 }
 
@@ -82,8 +103,19 @@ function convertRuleType(rule: ValidationRule, type: EditableValidationRuleType,
   const columnId = selectedColumn(rule, columns);
   switch (type) {
     case 'required': return { ...base, type, columnId };
+    case 'empty': return { ...base, type, columnId };
     case 'type': return { ...base, type, columnId, valueType: rule.type === 'type' ? rule.valueType : 'string' };
+    case 'integer': return { ...base, type, columnId };
+    case 'numberPrecision': return { ...base, type, columnId, decimalPlaces: rule.type === 'numberPrecision' ? rule.decimalPlaces : 0 };
+    case 'format': return {
+      ...base,
+      type,
+      columnId,
+      format: rule.type === 'format' ? rule.format : 'email',
+      ...(rule.type === 'format' ? { pattern: rule.pattern, prefix: rule.prefix, suffix: rule.suffix } : {}),
+    };
     case 'allowed': return { ...base, type, columnId, allowedValues: rule.type === 'allowed' ? rule.allowedValues : [] };
+    case 'notAllowed': return { ...base, type, columnId, disallowedValues: rule.type === 'notAllowed' ? rule.disallowedValues : [] };
     case 'numberRange': return { ...base, type, columnId, ...(rule.type === 'numberRange' ? { min: rule.min, max: rule.max } : {}) };
     case 'dateRange': return { ...base, type, columnId, ...(rule.type === 'dateRange' ? { min: rule.min, max: rule.max } : {}) };
     case 'stringLength': return { ...base, type, columnId, ...(rule.type === 'stringLength' ? { min: rule.min, max: rule.max } : {}) };
@@ -104,6 +136,9 @@ function convertRuleType(rule: ValidationRule, type: EditableValidationRuleType,
       referenceColumnId: rule.type === 'reference' ? rule.referenceColumnId : columnId,
       mode: rule.type === 'reference' ? rule.mode : 'exists',
     };
+    case 'relation': return rule.type === 'relation'
+      ? { ...base, type, source: rule.source, leftColumnIds: rule.leftColumnIds, rightColumnIds: rule.rightColumnIds, minMatches: rule.minMatches, maxMatches: rule.maxMatches }
+      : { ...base, type, source: 'current', leftColumnIds: columnId ? [columnId] : [], rightColumnIds: columnId ? [columnId] : [], minMatches: 1 };
   }
 }
 
@@ -117,6 +152,47 @@ function parseNumber(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function parseInteger(value: string): number | undefined {
+  const parsed = parseNumber(value);
+  return parsed !== undefined && Number.isInteger(parsed) ? parsed : undefined;
+}
+
+function parseListValue(value: string, column: DatasetColumn | undefined): CellValue {
+  const trimmed = value.trim();
+  if (column?.detectedType === 'number') {
+    const number = Number(trimmed.replace(',', '.'));
+    return Number.isFinite(number) ? number : trimmed;
+  }
+  if (column?.detectedType === 'boolean' && (trimmed === 'true' || trimmed === 'false')) return trimmed === 'true';
+  return trimmed;
+}
+
+function groupedOptions(): Array<[string, Array<{ value: EditableValidationRuleType; label: string }>]> {
+  return [...new Map(DEFINITION_OPTIONS.map((option) => [option.group, [] as Array<{ value: EditableValidationRuleType; label: string }>]))]
+    .map(([group]) => [group, DEFINITION_OPTIONS.filter((option) => option.group === group)]);
+}
+
+type RelationCardinality = 'none' | 'atMostOne' | 'exactlyOne' | 'atLeastOne' | 'atLeastTwo' | 'custom';
+
+function relationCardinality(rule: Extract<ValidationRule, { type: 'relation' }>): RelationCardinality {
+  if (rule.minMatches === 0 && rule.maxMatches === 0) return 'none';
+  if (rule.minMatches === 0 && rule.maxMatches === 1) return 'atMostOne';
+  if (rule.minMatches === 1 && rule.maxMatches === 1) return 'exactlyOne';
+  if (rule.minMatches === 1 && rule.maxMatches === undefined) return 'atLeastOne';
+  if (rule.minMatches === 2 && rule.maxMatches === undefined) return 'atLeastTwo';
+  return 'custom';
+}
+
+function relationBounds(cardinality: Exclude<RelationCardinality, 'custom'>): { minMatches: number; maxMatches?: number } {
+  switch (cardinality) {
+    case 'none': return { minMatches: 0, maxMatches: 0 };
+    case 'atMostOne': return { minMatches: 0, maxMatches: 1 };
+    case 'exactlyOne': return { minMatches: 1, maxMatches: 1 };
+    case 'atLeastTwo': return { minMatches: 2 };
+    case 'atLeastOne': return { minMatches: 1 };
+  }
+}
+
 function targetField(rule: ValidationRule, columns: readonly DatasetColumn[], onChange: (columnId: string) => void) {
   if (!('columnId' in rule)) return null;
   return (
@@ -128,21 +204,37 @@ function targetField(rule: ValidationRule, columns: readonly DatasetColumn[], on
   );
 }
 
-export function ValidationRuleEditor({ dataset, columns, value, disabled, onSave, onCancel }: ValidationRuleEditorProps) {
+export function ValidationRuleEditor({ dataset, columns, value, disabled, referenceSources = [], onSave, onCancel }: ValidationRuleEditorProps) {
   const [draft, setDraft] = useState<ValidationRule>(value);
   const [conversionNotice, setConversionNotice] = useState(false);
+  const [cardinalityOverride, setCardinalityOverride] = useState<RelationCardinality | null>(null);
 
-  useEffect(() => setDraft(value), [value]);
+  useEffect(() => {
+    setDraft(value);
+    setCardinalityOverride(null);
+  }, [value]);
 
   const update = (next: Partial<ValidationRule>) => setDraft((current) => ({ ...current, ...next } as ValidationRule));
   const definitionType = draft.type as EditableValidationRuleType;
   const selectedTarget = useMemo(() => selectedColumn(draft, columns), [columns, draft]);
+  const relationSources = useMemo<ReferenceDatasetOption[]>(() => [
+    { id: 'current', label: 'Dados atuais', kind: 'current', dataset: { columns: [...columns], rows: dataset.rows } },
+    ...referenceSources.filter(({ id }) => id !== 'current'),
+  ], [columns, dataset.rows, referenceSources]);
+  const selectedRelationSource = draft.type === 'relation'
+    ? relationSources.find(({ id }) => id === draft.source) ?? relationSources[0]
+    : undefined;
 
   const switchDefinition = (nextType: EditableValidationRuleType) => {
     if (nextType === draft.type) return;
     setDraft(convertRuleType(draft, nextType, columns));
+    setCardinalityOverride(null);
     setConversionNotice(true);
   };
+
+  const selectedCardinality = draft.type === 'relation'
+    ? cardinalityOverride ?? relationCardinality(draft)
+    : null;
 
   return (
     <section className="validation-rule-editor" aria-label="Editor de regra">
@@ -151,7 +243,9 @@ export function ValidationRuleEditor({ dataset, columns, value, disabled, onSave
       </label>
       <label>Tipo de definição
         <select aria-label="Tipo de definição" value={definitionType} disabled={disabled} onChange={(event) => switchDefinition(event.currentTarget.value as EditableValidationRuleType)}>
-          {DEFINITION_OPTIONS.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
+          {groupedOptions().map(([group, options]) => <optgroup label={group} key={group}>
+            {options.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
+          </optgroup>)}
         </select>
       </label>
       {targetField(draft, columns, (columnId) => update({ columnId }))}
@@ -168,9 +262,32 @@ export function ValidationRuleEditor({ dataset, columns, value, disabled, onSave
           </select>
         </label>
       ) : null}
+      {draft.type === 'integer' ? <p className="form-help">Aceita somente números sem casas decimais.</p> : null}
+      {draft.type === 'numberPrecision' ? (
+        <label>Casas decimais máximas
+          <input aria-label="Casas decimais máximas" type="number" min="0" step="1" value={draft.decimalPlaces} onChange={(event) => update({ decimalPlaces: parseNumber(event.currentTarget.value) ?? 0 })} />
+        </label>
+      ) : null}
+      {draft.type === 'format' ? (
+        <>
+          <label>Formato
+            <select aria-label="Formato" value={draft.format} onChange={(event) => update({ format: event.currentTarget.value as ValidationFormat })}>
+              <option value="email">E-mail</option><option value="cpf">CPF</option><option value="cnpj">CNPJ</option><option value="cep">CEP</option><option value="phone">Telefone</option><option value="prefix">Prefixo</option><option value="suffix">Sufixo</option><option value="regex">Padrão personalizado</option>
+            </select>
+          </label>
+          {draft.format === 'prefix' ? <label>Prefixo<input aria-label="Prefixo" value={draft.prefix ?? ''} onChange={(event) => update({ prefix: event.currentTarget.value })} /></label> : null}
+          {draft.format === 'suffix' ? <label>Sufixo<input aria-label="Sufixo" value={draft.suffix ?? ''} onChange={(event) => update({ suffix: event.currentTarget.value })} /></label> : null}
+          {draft.format === 'regex' ? <label>Padrão personalizado<input aria-label="Padrão personalizado" value={draft.pattern ?? ''} maxLength={256} onChange={(event) => update({ pattern: event.currentTarget.value })} /></label> : null}
+        </>
+      ) : null}
       {draft.type === 'allowed' ? (
         <label>Valores permitidos
-          <input aria-label="Valores permitidos" value={draft.allowedValues.map(displayValue).join(', ')} onChange={(event) => update({ allowedValues: event.currentTarget.value.split(',').map((item) => item.trim()).filter(Boolean) })} />
+          <input aria-label="Valores permitidos" value={draft.allowedValues.map(displayValue).join(', ')} onChange={(event) => update({ allowedValues: event.currentTarget.value.split(',').map((item) => parseListValue(item, columns.find(({ id }) => id === selectedTarget))).filter((item) => item !== '') })} />
+        </label>
+      ) : null}
+      {draft.type === 'notAllowed' ? (
+        <label>Valores bloqueados
+          <input aria-label="Valores bloqueados" value={draft.disallowedValues.map(displayValue).join(', ')} onChange={(event) => update({ disallowedValues: event.currentTarget.value.split(',').map((item) => parseListValue(item, columns.find(({ id }) => id === selectedTarget))).filter((item) => item !== '') })} />
         </label>
       ) : null}
       {draft.type === 'numberRange' || draft.type === 'dateRange' || draft.type === 'stringLength' ? (
@@ -223,6 +340,50 @@ export function ValidationRuleEditor({ dataset, columns, value, disabled, onSave
               <option value="exists">Deve existir</option><option value="notExists">Não deve existir</option>
             </select>
           </label>
+        </div>
+      ) : null}
+      {draft.type === 'relation' ? (
+        <div className="validation-relation-fields">
+          <label>Fonte do relacionamento
+            <select aria-label="Fonte do relacionamento" value={draft.source} onChange={(event) => {
+              const source = relationSources.find(({ id }) => id === event.currentTarget.value);
+              update({ source: event.currentTarget.value, rightColumnIds: source ? [firstColumn(source.dataset.columns)] : [] });
+            }}>
+              {relationSources.map((source) => <option value={source.id} key={source.id}>{source.label}</option>)}
+            </select>
+          </label>
+          <label>Colunas atuais
+            <select aria-label="Colunas atuais" multiple value={draft.leftColumnIds} onChange={(event) => update({ leftColumnIds: [...event.currentTarget.selectedOptions].map((option) => option.value) })}>
+              {columns.map((column) => <option value={column.id} key={column.id}>{column.header}</option>)}
+            </select>
+          </label>
+          <label>Colunas da fonte
+            <select aria-label="Colunas da fonte" multiple value={draft.rightColumnIds} onChange={(event) => update({ rightColumnIds: [...event.currentTarget.selectedOptions].map((option) => option.value) })}>
+              {(selectedRelationSource?.dataset.columns ?? []).map((column) => <option value={column.id} key={column.id}>{column.header}</option>)}
+            </select>
+          </label>
+          <label>Cardinalidade
+            <select aria-label="Cardinalidade" value={selectedCardinality ?? 'atLeastOne'} onChange={(event) => {
+              const cardinality = event.currentTarget.value as RelationCardinality;
+              setCardinalityOverride(cardinality);
+              if (cardinality !== 'custom') update(relationBounds(cardinality));
+            }}>
+              <option value="none">Nenhuma correspondência</option>
+              <option value="atMostOne">No máximo uma</option>
+              <option value="exactlyOne">Exatamente uma</option>
+              <option value="atLeastOne">Uma ou mais</option>
+              <option value="atLeastTwo">Duas ou mais</option>
+              <option value="custom">Personalizada</option>
+            </select>
+          </label>
+          {selectedCardinality === 'custom' ? <>
+            <label>Mínimo de correspondências
+              <input aria-label="Mínimo de correspondências" type="number" min="0" step="1" value={draft.minMatches} onChange={(event) => update({ minMatches: parseInteger(event.currentTarget.value) ?? 0 })} />
+            </label>
+            <label>Máximo de correspondências
+              <input aria-label="Máximo de correspondências" type="number" min="0" step="1" value={draft.maxMatches ?? ''} onChange={(event) => update({ maxMatches: parseInteger(event.currentTarget.value) })} />
+            </label>
+          </> : null}
         </div>
       ) : null}
       <ConditionBuilder dataset={dataset} value={draft.when as TransformConditionNode | undefined} disabled={disabled} onChange={(when) => update({ when })} />

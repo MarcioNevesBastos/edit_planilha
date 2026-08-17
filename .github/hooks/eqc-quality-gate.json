@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "bash .github/quality/stop-quality-gate.sh",
+        "windows": "powershell -NoProfile -ExecutionPolicy Bypass -File .github\\quality\\stop-quality-gate.ps1",
+        "linux": "bash .github/quality/stop-quality-gate.sh",
+        "osx": "bash .github/quality/stop-quality-gate.sh",
+        "timeout": 300
+      }
+    ]
+  }
+}

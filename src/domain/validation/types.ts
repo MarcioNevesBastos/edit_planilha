@@ -3,6 +3,8 @@ import type { Expression, TransformConditionNode } from '../transforms/types';
 
 export type ValidationValueType = 'string' | 'number' | 'date' | 'boolean';
 
+export type ValidationFormat = 'email' | 'cpf' | 'cnpj' | 'cep' | 'phone' | 'prefix' | 'suffix' | 'regex';
+
 export type ValidationSeverity = 'error' | 'warning';
 
 export interface ValidationRuleMetadata {
@@ -49,6 +51,15 @@ export interface ConditionalMatrixEntry {
   constraints: Readonly<Record<string, ConditionalConstraint>>;
 }
 
+export interface ValidationRelationRule extends ValidationRuleMetadata {
+  type: 'relation';
+  source: string;
+  leftColumnIds: readonly string[];
+  rightColumnIds: readonly string[];
+  minMatches: number;
+  maxMatches?: number;
+}
+
 export interface ConditionalMatrixRule extends ValidationRuleMetadata {
   type: 'conditionalMatrix';
   id?: string;
@@ -65,6 +76,18 @@ export type ValidationRule =
   | (ValidationRuleMetadata & { type: 'numberRange'; columnId: string; min?: number; max?: number })
   | (ValidationRuleMetadata & { type: 'dateRange'; columnId: string; min?: string; max?: string })
   | (ValidationRuleMetadata & { type: 'stringLength'; columnId: string; min?: number; max?: number })
+  | (ValidationRuleMetadata & { type: 'empty'; columnId: string })
+  | (ValidationRuleMetadata & { type: 'integer'; columnId: string })
+  | (ValidationRuleMetadata & { type: 'numberPrecision'; columnId: string; decimalPlaces: number })
+  | (ValidationRuleMetadata & { type: 'notAllowed'; columnId: string; disallowedValues: readonly CellValue[] })
+  | (ValidationRuleMetadata & {
+    type: 'format';
+    columnId: string;
+    format: ValidationFormat;
+    pattern?: string;
+    prefix?: string;
+    suffix?: string;
+  })
   | (ValidationRuleMetadata & { type: 'unique'; columnId: string })
   | (ValidationRuleMetadata & { type: 'compositeUnique'; columnIds: readonly string[] })
   | (ValidationRuleMetadata & {
@@ -75,6 +98,7 @@ export type ValidationRule =
   })
   | (ValidationRuleMetadata & { type: 'expression'; expression: Expression })
   | (ValidationRuleMetadata & { type: 'reference'; columnId: string; referenceColumnId: string; mode: 'exists' | 'notExists' })
+  | ValidationRelationRule
   | ConditionalMatrixRule;
 
 export interface ValidationIssue {

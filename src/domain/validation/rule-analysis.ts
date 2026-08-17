@@ -108,6 +108,7 @@ export function validationRuleColumnIds(rule: ValidationRule): string[] {
   ];
   if (rule.type === 'expression') return expressionColumnIds(rule.expression);
   if (rule.type === 'reference') return [rule.columnId, rule.referenceColumnId];
+  if (rule.type === 'relation') return [...rule.leftColumnIds];
   return 'columnIds' in rule ? [...rule.columnIds] : [rule.columnId];
 }
 
@@ -122,6 +123,18 @@ export function validateRuleConfiguration(rule: ValidationRule, columnIds: reado
     if (!knownColumns.has(columnId)) errors.push(`A coluna da regra não existe: ${columnId}.`);
   }
   if (rule.type === 'allowed' && rule.allowedValues.length === 0) errors.push('A lista permitida não pode estar vazia.');
+  if (rule.type === 'notAllowed' && rule.disallowedValues.length === 0) errors.push('A lista bloqueada não pode estar vazia.');
+  if (rule.type === 'numberPrecision' && (!Number.isInteger(rule.decimalPlaces) || rule.decimalPlaces < 0)) {
+    errors.push('A precisão decimal deve ser um inteiro não negativo.');
+  }
+  if (rule.type === 'format') {
+    if (rule.format === 'prefix' && !rule.prefix) errors.push('O prefixo da regra de formato não pode estar vazio.');
+    if (rule.format === 'suffix' && !rule.suffix) errors.push('O sufixo da regra de formato não pode estar vazio.');
+    if (rule.format === 'regex' && (!rule.pattern || rule.pattern.length > 256)) errors.push('O padrão informado deve conter entre 1 e 256 caracteres.');
+    if (rule.format === 'regex' && rule.pattern) {
+      try { new RegExp(rule.pattern); } catch { errors.push('O padrão informado não é uma expressão regular válida.'); }
+    }
+  }
   if (rule.type === 'numberRange' || rule.type === 'stringLength') {
     if (rule.min !== undefined && rule.max !== undefined && rule.min > rule.max) errors.push('O limite mínimo não pode ser maior que o máximo.');
     if (rule.min !== undefined && rule.min < 0) errors.push('O limite mínimo não pode ser negativo.');
@@ -130,6 +143,15 @@ export function validateRuleConfiguration(rule: ValidationRule, columnIds: reado
     errors.push('A data mínima não pode ser posterior à data máxima.');
   }
   if (rule.type === 'compositeUnique' && rule.columnIds.length === 0) errors.push('A chave composta deve conter ao menos uma coluna.');
+  if (rule.type === 'relation') {
+    if (rule.source.trim() === '') errors.push('A fonte de relacionamento é obrigatória.');
+    if (rule.leftColumnIds.length === 0) errors.push('O relacionamento deve conter ao menos uma coluna de origem.');
+    if (rule.rightColumnIds.length === 0) errors.push('O relacionamento deve conter ao menos uma coluna de destino.');
+    if (rule.leftColumnIds.length !== rule.rightColumnIds.length) errors.push('O relacionamento deve ter a mesma quantidade de colunas em ambos os lados.');
+    if (!Number.isInteger(rule.minMatches) || rule.minMatches < 0) errors.push('A cardinalidade mínima deve ser um inteiro não negativo.');
+    if (rule.maxMatches !== undefined && (!Number.isInteger(rule.maxMatches) || rule.maxMatches < 0)) errors.push('A cardinalidade máxima deve ser um inteiro não negativo.');
+    if (rule.maxMatches !== undefined && rule.minMatches > rule.maxMatches) errors.push('A cardinalidade mínima não pode ser maior que a máxima.');
+  }
   if (rule.type === 'conditionalMatrix' && columnIds.length > 0) errors.push(...validateConditionalMatrixRule(rule, columnIds));
   return errors;
 }
