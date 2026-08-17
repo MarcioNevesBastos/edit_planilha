@@ -49,6 +49,7 @@ import { Stepper, type WorkflowStepDefinition } from './components/Stepper';
 import { ValidationPanel } from './components/ValidationPanel';
 import { ConditionBuilder } from './components/ConditionBuilder';
 import { ValuePicker } from './components/ValuePicker';
+import { initialOperationTotal } from './operation-progress';
 import { createSessionStore, type BaseMode, type FileMetadata } from './state/session-store';
 import type { AutomaticDestination } from '../io/template/output-base';
 
@@ -528,7 +529,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
       operationId: request.operationId,
       label,
       completed: 0,
-      total: 0,
+      total: initialOperationTotal(request),
       phase: '',
     });
     worker.postMessage(request, transferablesForRequest(request));
@@ -1920,6 +1921,7 @@ const APP_STYLES = `
   .app-header .text-button { margin-left: auto; }
   .text-button { border: 0; color: #176b45; background: transparent; font-weight: 750; }
   .stepper { margin-bottom: 18px; overflow-x: auto; }
+  .stepper-scroll-hint { display: none; margin: -8px 0 12px; color: #6d7c75; font-size: 11px; font-weight: 750; text-align: right; }
   .stepper ol { display: grid; grid-template-columns: repeat(10, minmax(116px, 1fr)); min-width: 1160px; margin: 0; padding: 0; list-style: none; }
   .stepper li { position: relative; }
   .stepper li:not(:last-child)::after { content: ""; position: absolute; z-index: 0; top: 16px; right: -18%; width: 36%; height: 1px; background: #c8d5cf; }
@@ -2145,6 +2147,7 @@ const APP_STYLES = `
     .matrix-toolbar { align-items: flex-start; flex-direction: column; }
     .matrix-toolbar > div:first-child { margin-right: 0; }
     .workflow-footer { position: sticky; bottom: 0; z-index: 3; }
+    .stepper-scroll-hint { display: block; }
   }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
 `;
