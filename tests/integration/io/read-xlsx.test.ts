@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import * as XLSX from 'xlsx';
 import { describe, expect, it } from 'vitest';
 import { listSourceSheets, readSource } from '../../../src/io/source/read-source';
 
@@ -11,6 +12,20 @@ async function sourceFixture(): Promise<File> {
   const content = await readFile(fixtureUrl);
 
   return new File([content], 'source-basic.xlsx', {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+}
+
+function largeSourceFixture(): File {
+  const rows = Array.from({ length: 501 }, (_, rowIndex) =>
+    Array.from({ length: 500 }, (_, columnIndex) => rowIndex === 0
+      ? `Coluna ${columnIndex + 1}`
+      : `${rowIndex}-${columnIndex}`));
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), 'Dados');
+  const content = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+  return new File([content], 'large-source.xlsx', {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   });
 }
@@ -55,5 +70,13 @@ describe('XLSX source reader', () => {
         message: 'O intervalo da aba selecionada contém 9 células e excede o limite de importação de 8 células.',
       })],
     });
+  });
+
+  it('accepts a sheet above the former default bound when it remains within the safe default', async () => {
+    const dataset = await readSource(largeSourceFixture());
+
+    expect(dataset.columns).toHaveLength(500);
+    expect(dataset.rows).toHaveLength(500);
+    expect(dataset.rows[499]?.sourceRowNumber).toBe(501);
   });
 });

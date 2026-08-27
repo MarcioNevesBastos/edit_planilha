@@ -3,7 +3,7 @@ import { createDataset } from './dataset';
 import { SourceReadError, type ReadSourceOptions } from './types';
 import type { CellValue, DatasetColumn } from '../../domain/dataset/types';
 
-const DEFAULT_XLSX_MAX_CELLS = 250_000;
+const DEFAULT_XLSX_MAX_CELLS = 2_500_000;
 
 export async function listXlsxSheets(file: File): Promise<string[]> {
   return (await readWorkbook(file)).SheetNames;

@@ -2,6 +2,7 @@ import type { Dataset } from '../../domain/dataset/types';
 
 export interface ReadSourceOptions {
   delimiter?: string;
+  /** Maximum worksheet range size accepted by the reader; it never truncates input data. */
   maxCells?: number;
   sheetName?: string;
 }
