@@ -7,6 +7,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ValidationPanel } from '../../../src/app/components/ValidationPanel';
 import type { Dataset } from '../../../src/domain/dataset/types';
+import type { ValidationIssue } from '../../../src/domain/validation/types';
 
 const dataset: Dataset = {
   columns: [
@@ -85,5 +86,39 @@ describe('ValidationPanel conditional matrices', () => {
 
     expect(keyList.getByRole('checkbox', { name: 'Contexto' })).toBeChecked();
     expect(keyList.getByRole('checkbox', { name: 'Código' })).toBeChecked();
+  });
+});
+
+describe('ValidationPanel issue list', () => {
+  afterEach(() => cleanup());
+
+  it('virtualizes large validation issue lists instead of mounting every issue', () => {
+    const issues: ValidationIssue[] = Array.from({ length: 200 }, (_, index) => ({
+      rowId: `row-${index}`,
+      sourceRowNumber: index + 2,
+      columnId: 'value__1',
+      code: 'numberRange',
+      value: index,
+      message: `Falha ${index}`,
+    }));
+
+    render(
+      <ValidationPanel
+        dataset={dataset}
+        columns={dataset.columns}
+        detectedRules={[]}
+        userRules={[]}
+        issues={issues}
+        onAddRule={vi.fn()}
+        onReplaceRule={vi.fn()}
+        onRemoveRule={vi.fn()}
+        onRun={vi.fn()}
+        onSelectIssue={vi.fn()}
+      />,
+    );
+
+    const issueList = screen.getByRole('region', { name: 'Erros de validação' });
+    expect(issueList.querySelectorAll('button').length).toBeLessThan(issues.length);
+    expect(screen.getByText('Falha 0')).toBeInTheDocument();
   });
 });

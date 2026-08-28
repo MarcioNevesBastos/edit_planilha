@@ -773,7 +773,8 @@ describe('final export safeguards', () => {
     expect(screen.getByRole('radio', { name: 'Sim, exportar somente registros sem erro' })).not.toBeChecked();
 
     await user.click(screen.getByRole('radio', { name: 'Não, não exportar' }));
-    expect(exportButton).toBeDisabled();
+    await user.click(screen.getByRole('radio', { name: 'Não, somente erros' }));
+    expect(exportButton).toBeEnabled();
     expect(worker.requests.some(({ type }) => type === 'EXPORT')).toBe(false);
 
     await user.click(screen.getByRole('radio', { name: 'Sim, exportar somente registros sem erro' }));

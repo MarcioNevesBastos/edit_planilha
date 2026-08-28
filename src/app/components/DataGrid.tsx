@@ -4,6 +4,7 @@ import type { CellValue, Dataset } from '../../domain/dataset/types';
 import type { TransformCommand } from '../../domain/transforms/types';
 import type { ValidationIssue } from '../../domain/validation/types';
 import { getExportRowCounts, getValidationErrorRowIds } from '../export-row-status';
+import { observeVirtualizerElementRect } from '../virtualizer';
 
 export type DataGridView = 'all' | 'errors' | 'valid';
 
@@ -108,19 +109,7 @@ export function DataGrid({
     estimateSize: () => 42,
     overscan: 6,
     initialRect: { width: 900, height: 360 },
-    observeElementRect: (instance, callback) => {
-      const element = instance.scrollElement;
-      if (!element) return undefined;
-      const report = () => {
-        const rect = element.getBoundingClientRect();
-        callback({ width: rect.width || 900, height: rect.height || 360 });
-      };
-      report();
-      if (typeof ResizeObserver === 'undefined') return undefined;
-      const observer = new ResizeObserver(report);
-      observer.observe(element);
-      return () => observer.disconnect();
-    },
+    observeElementRect: observeVirtualizerElementRect,
   });
 
   useEffect(() => {

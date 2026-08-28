@@ -26,6 +26,43 @@ beforeEach(async () => {
 });
 
 describe('exportWorkbook', () => {
+  it('exports thousands of rows without quadratic worksheet rewrites', async () => {
+    const inserts = Array.from({ length: 2_000 }, (_, index) => ({
+      incomingRowId: `large-${index}`,
+      destinationRow: index + 6,
+      values: {
+        source_id: index + 1,
+        source_product: `Produto ${index + 1}`,
+        source_quantity: 1,
+        source_price: 2.5,
+      },
+    }));
+    const writePlan: WritePlan = {
+      mode: 'append',
+      headerRow: 2,
+      clears: [],
+      inserts,
+      updates: [],
+      kept: [],
+      duplicates: [],
+      rejected: [],
+      assignments: inserts.map(({ incomingRowId, destinationRow }) => ({
+        kind: 'insert' as const,
+        incomingRowId,
+        destinationRow,
+      })),
+    };
+
+    const started = performance.now();
+    const output = await exportWorkbook(input(writePlan, valid), {
+      batchSize: 500,
+      onProgress: () => undefined,
+    });
+
+    expect(output.size).toBeGreaterThan(1_000);
+    expect(performance.now() - started).toBeLessThan(5_000);
+  }, 10_000);
+
   it('applies replace writes while preserving headers, styles, formulas, and unrelated parts', async () => {
     const untouched = snapshotParts(pkg, [
       'xl/drawings/drawing1.xml',

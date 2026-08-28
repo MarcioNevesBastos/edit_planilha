@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import React, { useRef, useState } from 'react';
 import type { Dataset, DatasetColumn } from '../../domain/dataset/types';
 import type { ConditionalMatrixRule, ValidationIssue, ValidationRule } from '../../domain/validation/types';
 import { analyzeValidationRules } from '../../domain/validation/rule-analysis';
@@ -6,6 +7,7 @@ import { ConditionalMatrixEditor } from './ConditionalMatrixEditor';
 import { SearchableChecklist } from './SearchableChecklist';
 import { ValidationRuleTable } from './ValidationRuleTable';
 import type { ReferenceDatasetOption } from './ValidationRuleEditor';
+import { observeVirtualizerElementRect } from '../virtualizer';
 
 interface ValidationPanelProps {
   dataset: Dataset;
@@ -77,9 +79,18 @@ export function ValidationPanel({
 }: ValidationPanelProps) {
   const [matrixKeyColumnIds, setMatrixKeyColumnIds] = useState<string[]>(columns[0] ? [columns[0].id] : []);
   const [matrixDependentColumnIds, setMatrixDependentColumnIds] = useState<string[]>(columns[1] ? [columns[1].id] : []);
+  const issueListRef = useRef<HTMLDivElement>(null);
   const matrixRules = userRules.flatMap((rule, index) => rule.type === 'conditionalMatrix' ? [{ rule, index }] : []);
   const simpleRules = userRules.flatMap((rule, index) => rule.type === 'conditionalMatrix' ? [] : [{ rule, index }]);
   const configurationErrors = analyzeValidationRules(userRules, columns.map(({ id }) => id));
+  const issueListVirtualizer = useVirtualizer({
+    count: issues.length,
+    getScrollElement: () => issueListRef.current,
+    estimateSize: () => 48,
+    overscan: 8,
+    initialRect: { width: 900, height: 360 },
+    observeElementRect: observeVirtualizerElementRect,
+  });
 
   const toggleColumn = (columnIds: string[], setColumnIds: (ids: string[]) => void, id: string) => {
     setColumnIds(columnIds.includes(id) ? columnIds.filter((current) => current !== id) : [...columnIds, id]);
@@ -161,13 +172,26 @@ export function ValidationPanel({
       </section>
       {issues.length > 0 ? (
         <section className="issue-list" aria-label="Erros de validação">
-          {issues.map((issue) => (
-            <button type="button" className={issue.severity === 'warning' ? 'warning-issue' : undefined} key={`${issue.rowId}-${issue.columnId}-${issue.code}`} onClick={() => onSelectIssue(issue)}>
-              <span>Linha {issue.sourceRowNumber}</span>
-              <strong>{issue.severity === 'warning' ? 'Aviso · ' : ''}{columns.find(({ id }) => id === issue.columnId)?.header ?? issue.columnId}</strong>
-              <span>{issue.message}</span>
-            </button>
-          ))}
+          <div ref={issueListRef} className="issue-list-viewport">
+            <div style={{ height: issueListVirtualizer.getTotalSize(), position: 'relative' }}>
+              {issueListVirtualizer.getVirtualItems().map(({ index, start }) => {
+                const issue = issues[index];
+                return (
+                  <button
+                    type="button"
+                    className={issue.severity === 'warning' ? 'warning-issue' : undefined}
+                    key={`${issue.rowId}-${issue.columnId}-${issue.code}`}
+                    style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${start}px)` }}
+                    onClick={() => onSelectIssue(issue)}
+                  >
+                    <span>Linha {issue.sourceRowNumber}</span>
+                    <strong>{issue.severity === 'warning' ? 'Aviso · ' : ''}{columns.find(({ id }) => id === issue.columnId)?.header ?? issue.columnId}</strong>
+                    <span>{issue.message}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </section>
       ) : null}
     </div>

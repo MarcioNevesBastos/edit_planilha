@@ -1054,7 +1054,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   const exportWorkbook = useCallback(() => {
     if (!currentWritePlan || !activeTemplateBuffer) return;
     if (includeValidationWarnings === null) return;
-    if (validationErrorCount > 0 && exportValidationErrors !== true) return;
+    if (validationErrorCount > 0 && exportValidationErrors === null) return;
     const input = exportInput(currentWritePlan, reviewedRiskIds, includeValidationWarnings);
     if (!input) return;
     const id = operationId('export');
@@ -1556,7 +1556,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
                   || !validationResult
                   || currentExportRisks === null
                   || includeValidationWarnings === null
-                  || (validationErrorCount > 0 && exportValidationErrors !== true)
+                  || (validationErrorCount > 0 && exportValidationErrors === null)
                   || currentExportRisks.some((risk) => risk.severity === 'hard')
                   || currentExportRisks.some((risk) => risk.severity === 'soft'
                     && !reviewedRiskIds.includes(exportRiskIdentifier(risk)))}
@@ -2102,7 +2102,9 @@ const APP_STYLES = `
   .panel-section li { margin: 8px 0; }
   .inline-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-top: 14px; align-items: end; }
   .validation-run { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 16px; border-radius: 12px; background: #eff6f2; }
-  .issue-list { grid-column: 1 / -1; display: grid; gap: 7px; }
+  .issue-list { grid-column: 1 / -1; }
+  .issue-list-viewport { max-height: 420px; overflow: auto; }
+  .issue-list-viewport > div { display: grid; gap: 7px; }
   .issue-list button { display: grid; grid-template-columns: 100px 160px 1fr; gap: 10px; text-align: left; border: 1px solid #edd2cf; color: #69342e; background: #fff8f7; }
   .issue-list button.warning-issue { border-color: #ecd9a8; color: #735319; background: #fffaf0; }
   .conditional-matrices-section { grid-column: 1 / -1; }

@@ -2,7 +2,6 @@ import type { CellValue } from '../../domain/dataset/types';
 import type { MappingSuggestion } from '../../domain/mapping/types';
 import type { WriteInsert, WritePlan, WriteUpdate } from '../../domain/merge/types';
 import type { ValidationResult } from '../../domain/validation/types';
-import { shiftFormulaA1 } from './formula-shift';
 import { expandDestination } from './model-expander';
 import { type OoxmlPackage } from './ooxml-package';
 import { addRejectedSheet, type RejectedSheetRow } from './rejected-sheet';
@@ -82,6 +81,25 @@ interface CellRange {
 interface ResolvedMapping {
   sourceColumnId: string;
   destinationColumn: string;
+}
+
+interface IndexedCell {
+  column: number;
+  start: number;
+  end: number;
+  xml: string;
+}
+
+interface IndexedRow {
+  raw: string;
+  cells: IndexedCell[];
+  cellsByColumn: Map<number, IndexedCell>;
+  updates: Map<number, string>;
+}
+
+interface IndexedWorksheet {
+  sheetData: string;
+  rows: Map<number, IndexedRow>;
 }
 
 type WriteAction = WriteInsert | WriteUpdate;
@@ -689,15 +707,30 @@ function applyWritePlan(
   invalidRowIds: ReadonlySet<string>,
   options?: ExportBatchOptions,
 ): Promise<string> {
-  let result = worksheet;
+  const indexed = indexWorksheet(worksheet);
+  const template = indexed.rows.get(input.destination.templateRow);
+  if (!template) {
+    throw new Error(`A linha de destino ${input.destination.templateRow} não foi encontrada após a expansão.`);
+  }
   const processOperation = (operation: { destinationRow: number; values?: Record<string, CellValue> }) => {
+    const row = indexed.rows.get(operation.destinationRow);
+    if (!row) {
+      throw new Error(`A linha de destino ${operation.destinationRow} não foi encontrada após a expansão.`);
+    }
     for (const mapping of mappings) {
-      result = writeWorksheetCell(
-        result,
-        operation.destinationRow,
-        mapping.destinationColumn,
-        operation.values === undefined ? undefined : operation.values[mapping.sourceColumnId] ?? null,
-        input.destination.templateRow,
+      const column = columnNumber(mapping.destinationColumn);
+      const existing = row.cellsByColumn.get(column);
+      const value = operation.values === undefined
+        ? undefined
+        : operation.values[mapping.sourceColumnId] ?? null;
+      if (value === undefined && !existing) continue;
+      row.updates.set(
+        column,
+        cellXml(
+          `${mapping.destinationColumn}${operation.destinationRow}`,
+          value,
+          existing?.xml ?? template.cellsByColumn.get(column)?.xml,
+        ),
       );
     }
   };
@@ -706,9 +739,10 @@ function applyWritePlan(
     for (const action of validWriteActions(input.writePlan, invalidRowIds)) {
       processOperation({ destinationRow: action.destinationRow, values: action.values });
     }
-    return Promise.resolve(result);
+    return Promise.resolve(serializeIndexedWorksheet(worksheet, indexed));
   }
-  return processExportWritePlan(input, invalidRowIds, options, processOperation).then(() => result);
+  return processExportWritePlan(input, invalidRowIds, options, processOperation)
+    .then(() => serializeIndexedWorksheet(worksheet, indexed));
 }
 
 async function processExportWritePlan(
@@ -769,71 +803,78 @@ async function processExportRows<T>(
   return completed;
 }
 
-function assertExportBatchSize(batchSize: number): void {
-  if (!Number.isSafeInteger(batchSize) || batchSize < 1) {
-    throw new RangeError('batchSize deve ser um número inteiro positivo.');
-  }
-}
-
-function writeWorksheetCell(
-  worksheet: string,
-  rowNumber: number,
-  column: string,
-  value: CellValue | undefined,
-  templateRow: number,
-): string {
-  const ensured = ensureRow(worksheet, rowNumber, templateRow);
-  const row = findRow(ensured, rowNumber);
-  if (!row) {
-    throw new Error(`A linha de destino ${rowNumber} não foi encontrada após a expansão.`);
-  }
-  const reference = `${column.toUpperCase()}${rowNumber}`;
-  const existing = findCell(row, reference);
-  if (value === undefined && !existing) {
-    return ensured;
-  }
-  const templateCell = findCell(findRow(ensured, templateRow) ?? '', `${column.toUpperCase()}${templateRow}`);
-  const replacement = cellXml(reference, value, existing ?? templateCell);
-  const updatedRow = existing
-    ? row.replace(existing, replacement)
-    : insertCell(row, replacement, columnNumber(column));
-  return ensured.replace(row, updatedRow);
-}
-
-function ensureRow(worksheet: string, rowNumber: number, templateRowNumber: number): string {
-  const existing = findRow(worksheet, rowNumber);
-  if (existing) {
-    return existing.endsWith('/>')
-      ? worksheet.replace(existing, existing.replace(/\/>$/, '></row>'))
-      : worksheet;
-  }
-  const template = findRow(worksheet, templateRowNumber);
-  if (!template) {
-    throw new Error(`A linha de modelo ${templateRowNumber} não foi encontrada na planilha.`);
-  }
-  const shifted = shiftRow(template, rowNumber - templateRowNumber);
+function indexWorksheet(worksheet: string): IndexedWorksheet {
   const sheetData = worksheet.match(/<sheetData\b[^>]*>([\s\S]*?)<\/sheetData>/)?.[1];
   if (sheetData === undefined) {
     throw new Error('A planilha não possui o elemento sheetData.');
   }
-  const rows = [...sheetData.matchAll(/<row\b[^>]*\br="(\d+)"[^>]*\/>|<row\b[^>]*\br="(\d+)"[^>]*>[\s\S]*?<\/row>/g)];
-  const next = rows.find((match) => Number(match[1] ?? match[2]) > rowNumber)?.[0];
-  const updatedData = next
-    ? sheetData.replace(next, shifted + next)
-    : sheetData + shifted;
-  return worksheet.replace(sheetData, updatedData);
+  const rows = new Map<number, IndexedRow>();
+  for (const match of sheetData.matchAll(worksheetRowPattern())) {
+    const raw = match[0];
+    const cells: IndexedCell[] = [];
+    const cellsByColumn = new Map<number, IndexedCell>();
+    for (const cellMatch of raw.matchAll(/<c\b[^>]*\/\>|<c\b[^>]*>[\s\S]*?<\/c>/g)) {
+      const xml = cellMatch[0];
+      const reference = attribute(xml, 'r');
+      if (!reference || cellMatch.index === undefined) continue;
+      const column = columnNumber(reference.replace(/\d+$/, ''));
+      const cell = { column, start: cellMatch.index, end: cellMatch.index + xml.length, xml };
+      cells.push(cell);
+      cellsByColumn.set(column, cell);
+    }
+    rows.set(Number(match[1] ?? match[2]), { raw, cells, cellsByColumn, updates: new Map() });
+  }
+  return { sheetData, rows };
 }
 
-function shiftRow(row: string, rowDelta: number): string {
-  let result = row.replace(/(<row\b[^>]*\br=")(\d+)(")/, (_, open, value, close) => (
-    `${open}${Number(value) + rowDelta}${close}`
-  ));
-  result = result.replace(/(<c\b[^>]*\br=")([A-Z]+)(\d+)(")/gi, (
-    _, open, column, value, close,
-  ) => `${open}${column}${Number(value) + rowDelta}${close}`);
-  return result.replace(/(<f\b[^>]*>)([\s\S]*?)(<\/f>)/g, (_, open, formula, close) => (
-    `${open}${shiftFormulaA1(formula, rowDelta, 0)}${close}`
-  ));
+function serializeIndexedWorksheet(worksheet: string, indexed: IndexedWorksheet): string {
+  const updatedSheetData = indexed.sheetData.replace(
+    worksheetRowPattern(),
+    (rowXml) => serializeIndexedRow(indexed.rows.get(Number(attribute(rowXml, 'r'))) ?? {
+      raw: rowXml,
+      cells: [],
+      cellsByColumn: new Map(),
+      updates: new Map(),
+    }),
+  );
+  return worksheet.replace(indexed.sheetData, updatedSheetData);
+}
+
+function worksheetRowPattern(): RegExp {
+  return /<row\b(?=[^>]*\br="(\d+)")[^>]*?\/>|<row\b(?=[^>]*\br="(\d+)")[^>]*?>[\s\S]*?<\/row>/g;
+}
+
+function serializeIndexedRow(row: IndexedRow): string {
+  if (row.updates.size === 0) return row.raw;
+  const source = row.raw.endsWith('/>') ? row.raw.replace(/\/>$/, '></row>') : row.raw;
+  const additions = [...row.updates.entries()]
+    .filter(([column]) => !row.cellsByColumn.has(column))
+    .sort(([left], [right]) => left - right);
+  let result = '';
+  let cursor = 0;
+  let additionIndex = 0;
+  for (const cell of row.cells) {
+    result += source.slice(cursor, cell.start);
+    while (additionIndex < additions.length && additions[additionIndex][0] < cell.column) {
+      result += additions[additionIndex][1];
+      additionIndex += 1;
+    }
+    result += row.updates.get(cell.column) ?? source.slice(cell.start, cell.end);
+    cursor = cell.end;
+  }
+  const tail = source.slice(cursor);
+  const remaining = additions.slice(additionIndex).map(([, xml]) => xml).join('');
+  const closingIndex = tail.lastIndexOf('</row>');
+  result += closingIndex < 0
+    ? tail
+    : `${tail.slice(0, closingIndex)}${remaining}${tail.slice(closingIndex)}`;
+  return result;
+}
+
+function assertExportBatchSize(batchSize: number): void {
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1) {
+    throw new RangeError('batchSize deve ser um número inteiro positivo.');
+  }
 }
 
 function cellXml(reference: string, value: CellValue | undefined, model?: string | null): string {
@@ -855,18 +896,6 @@ function cellXml(reference: string, value: CellValue | undefined, model?: string
   }
   const preserveSpace = value.trim() === value ? '' : ' xml:space="preserve"';
   return `${open} t="inlineStr"><is><t${preserveSpace}>${escapeXml(value)}</t></is></c>`;
-}
-
-function insertCell(row: string, cell: string, targetColumn: number): string {
-  const cells = [...row.matchAll(/<c\b[^>]*\/>|<c\b[^>]*>[\s\S]*?<\/c>/g)];
-  const next = cells.find((match) => {
-    const reference = attribute(match[0], 'r');
-    return reference ? columnNumber(reference.replace(/\d+$/, '')) > targetColumn : false;
-  })?.[0];
-  if (next) {
-    return row.replace(next, cell + next);
-  }
-  return row.replace('</row>', `${cell}</row>`);
 }
 
 function validWriteActions(
