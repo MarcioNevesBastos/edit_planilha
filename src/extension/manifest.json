@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Chrome Excel Transformer",
-  "version": "0.2.0",
+  "name": "Monitora-planilha",
+  "version": "0.2.5",
   "action": {
-    "default_title": "Abrir Chrome Excel Transformer"
+    "default_title": "Abrir Monitora-planilha"
   },
   "background": {
     "service_worker": "service-worker.js"
