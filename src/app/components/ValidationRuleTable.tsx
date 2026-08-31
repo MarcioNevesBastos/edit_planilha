@@ -3,6 +3,7 @@ import type { Dataset, DatasetColumn } from '../../domain/dataset/types';
 import { validateDataset } from '../../domain/validation/validate-row';
 import { getValidationRuleId } from '../../domain/validation/rule-analysis';
 import type { ValidationConfigurationError, ValidationIssue, ValidationRule } from '../../domain/validation/types';
+import { getExportRowCounts } from '../export-row-status';
 import { ValidationRuleEditor, createDefaultValidationRule, type ReferenceDatasetOption } from './ValidationRuleEditor';
 
 interface ValidationRuleTableProps {
@@ -80,6 +81,7 @@ export function ValidationRuleTable({
   const preview = useMemo(() => validateDataset(dataset, rules, referenceDatasetMap), [dataset, referenceDatasetMap, rules]);
   const allConfigurationErrors = [...configurationErrors, ...(preview.configurationErrors ?? [])];
   const impact = preview.ruleImpact ?? {};
+  const previewCounts = getExportRowCounts(dataset, preview.issues);
   const visibleRules = rules.flatMap((rule, index) => {
     const text = `${rule.name ?? ''} ${ruleLabel(rule, columns)} ${definitionLabel(rule)}`.toLocaleLowerCase();
     if (search.trim() !== '' && !text.includes(search.trim().toLocaleLowerCase())) return [];
@@ -134,9 +136,10 @@ export function ValidationRuleTable({
       {allConfigurationErrors.length > 0 ? <div className="error-banner" role="alert"><strong>Corrija a configuração antes de executar.</strong>{allConfigurationErrors.map((error) => <p key={`${error.ruleId}-${error.message}`}>{error.message}</p>)}</div> : null}
       <div className="validation-impact-summary" aria-label="Prévia do impacto">
         <strong>Prévia do impacto</strong>
-        <span>{new Set(issues.map(({ rowId }) => rowId)).size} linha(s) afetada(s)</span>
-        <span>{issues.length} ocorrência(s) atual(is)</span>
-        <strong>{issues.length === 0 ? 'Nenhum erro encontrado' : `${issues.length} erro(s) encontrado(s)`}</strong>
+        <span>{new Set(preview.issues.map(({ rowId }) => rowId)).size} linha(s) afetada(s)</span>
+        <span>{preview.issues.length} ocorrência(s) atual(is)</span>
+        <span>{previewCounts.exportableRows} linha(s) válida(s) para exportação</span>
+        <strong>{preview.issues.length === 0 ? 'Nenhum erro encontrado' : `${preview.issues.length} erro(s) encontrado(s)`}</strong>
       </div>
       <button type="button" className="primary-button" disabled={disabled || allConfigurationErrors.length > 0} onClick={onRun}>Executar validação</button>
     </section>

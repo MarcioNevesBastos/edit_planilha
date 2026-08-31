@@ -2,7 +2,7 @@
 
 import '@testing-library/jest-dom/vitest';
 import React from 'react';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ValidationRuleTable } from '../../../src/app/components/ValidationRuleTable';
@@ -28,8 +28,37 @@ const referenceSources: ReferenceDatasetOption[] = [{
   },
 }];
 
+const populatedDataset: Dataset = {
+  ...dataset,
+  rows: [
+    { rowId: 'r-1', sourceRowNumber: 2, values: { start__1: 1, end__1: 2 }, originalValues: { start__1: 1, end__1: 2 } },
+    { rowId: 'r-2', sourceRowNumber: 3, values: { start__1: null, end__1: 2 }, originalValues: { start__1: null, end__1: 2 } },
+    { rowId: 'r-3', sourceRowNumber: 4, values: { start__1: 3, end__1: 4 }, originalValues: { start__1: 3, end__1: 4 } },
+  ],
+};
+
 describe('ValidationRuleTable', () => {
   afterEach(() => cleanup());
+
+  it('shows recalculated errors and valid rows for export before validation runs', () => {
+    render(
+      <ValidationRuleTable
+        dataset={populatedDataset}
+        columns={populatedDataset.columns}
+        rules={[{ id: 'required-start', type: 'required', columnId: 'start__1' }]}
+        issues={[]}
+        disabled={false}
+        onAddRule={vi.fn()}
+        onReplaceRule={vi.fn()}
+        onRemoveRule={vi.fn()}
+        onRun={vi.fn()}
+      />,
+    );
+
+    const impact = screen.getByText('Prévia do impacto').parentElement;
+    expect(within(impact!).getByText('2 linha(s) válida(s) para exportação')).toBeInTheDocument();
+    expect(within(impact!).getByText('1 erro(s) encontrado(s)')).toBeInTheDocument();
+  });
 
   it('creates a same-row comparison from the table editor', async () => {
     const user = userEvent.setup();
