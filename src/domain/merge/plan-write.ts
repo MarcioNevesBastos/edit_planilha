@@ -22,6 +22,14 @@ function isEmptyKeyValue(value: CellValue): boolean {
   return value === null || (typeof value === 'string' && value.trim() === '');
 }
 
+function rowsToWrite(input: WritePlanInput): DataRow[] {
+  if (input.writeColumnIds === undefined) return [...input.incoming.rows];
+  return input.incoming.rows.filter((row) => input.writeColumnIds?.some((columnId) => {
+    const value = row.values[columnId] ?? null;
+    return !isEmptyKeyValue(value);
+  }));
+}
+
 function keyValues(row: DataRow, keyColumnIds: readonly string[]): CellValue[] {
   return keyColumnIds.map((columnId) => row.values[columnId] ?? null);
 }
@@ -109,11 +117,12 @@ function assignment(kind: DestinationRowAssignment['kind'], incomingRowId: strin
 }
 
 function planReplace(input: WritePlanInput): WritePlan {
+  const incomingRows = rowsToWrite(input);
   const clears: WriteClear[] = existingDataRows(input).map((row) => ({
     existingRowId: row.rowId,
     destinationRow: row.sourceRowNumber,
   }));
-  const inserts = input.incoming.rows.map((row, index) => insert(row, input.destination.dataStartRow + index));
+  const inserts = incomingRows.map((row, index) => insert(row, input.destination.dataStartRow + index));
 
   return {
     mode: input.mode,
@@ -129,8 +138,9 @@ function planReplace(input: WritePlanInput): WritePlan {
 }
 
 function planAppend(input: WritePlanInput): WritePlan {
+  const incomingRows = rowsToWrite(input);
   const firstRow = nextDestinationRow(input);
-  const inserts = input.incoming.rows.map((row, index) => insert(row, firstRow + index));
+  const inserts = incomingRows.map((row, index) => insert(row, firstRow + index));
 
   return {
     mode: input.mode,
@@ -146,7 +156,8 @@ function planAppend(input: WritePlanInput): WritePlan {
 }
 
 function planUpdate(input: WritePlanInput, keyColumnIds: readonly string[]): WritePlan {
-  const incomingGroups = groupRowsByKey(input.incoming.rows, keyColumnIds);
+  const incomingRows = rowsToWrite(input);
+  const incomingGroups = groupRowsByKey(incomingRows, keyColumnIds);
   const existingGroups = groupRowsByKey(existingDataRows(input), keyColumnIds);
   const duplicates = [
     ...duplicateClassifications(incomingGroups, 'incoming', keyColumnIds),
@@ -165,7 +176,7 @@ function planUpdate(input: WritePlanInput, keyColumnIds: readonly string[]): Wri
   const assignments: DestinationRowAssignment[] = [];
   let nextRow = nextDestinationRow(input);
 
-  for (const incomingRow of input.incoming.rows) {
+  for (const incomingRow of incomingRows) {
     const values = keyValues(incomingRow, keyColumnIds);
     const key = serializeKey(values);
     if (values.some(isEmptyKeyValue)) {
@@ -265,7 +276,8 @@ export async function planWriteInBatches(
     }
   }
 
-  const total = input.existing.rows.length + input.incoming.rows.length;
+  const incomingRows = rowsToWrite(input);
+  const total = input.existing.rows.length + incomingRows.length;
   let completed = 0;
   let maxExistingRow = input.destination.dataStartRow - 1;
   const clears: WriteClear[] = [];
@@ -286,7 +298,7 @@ export async function planWriteInBatches(
       ? input.destination.dataStartRow
       : maxExistingRow + 1;
     const inserts: WriteInsert[] = [];
-    await processWriteRows(input.incoming.rows, completed, total, options, (row, index) => {
+    await processWriteRows(incomingRows, completed, total, options, (row, index) => {
       inserts.push(insert(row, firstRow + index));
     });
     return {
@@ -302,7 +314,7 @@ export async function planWriteInBatches(
     };
   }
 
-  await processWriteRows(input.incoming.rows, completed, total, options, (row) => {
+  await processWriteRows(incomingRows, completed, total, options, (row) => {
     addToKeyGroup(incomingGroups, row, keyColumnIds);
   });
 
@@ -324,9 +336,9 @@ export async function planWriteInBatches(
   let nextRow = Math.max(input.destination.dataStartRow - 1, maxExistingRow) + 1;
 
   await processWriteRows(
-    input.incoming.rows,
+    incomingRows,
     0,
-    input.incoming.rows.length,
+    incomingRows.length,
     options,
     (incomingRow) => {
       const values = keyValues(incomingRow, keyColumnIds);

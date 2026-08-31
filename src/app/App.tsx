@@ -379,6 +379,7 @@ function destinationForExport(
   candidate: DestinationCandidate,
   dataset: Dataset,
   index: WorkbookIndex,
+  automatic = false,
 ): ExportDestination {
   const rows = rangeRows(candidate.range);
   const tablePath = candidate.kind === 'table'
@@ -392,6 +393,7 @@ function destinationForExport(
     templateRow: rows.templateRow,
     ...(tablePath ? { tablePath } : {}),
     ...(candidate.kind === 'named-range' ? { definedName: candidate.definedName } : {}),
+    ...(automatic ? { automatic: true } : {}),
     columns: dataset.columns.map((column) => ({
       id: column.id,
       column: XLSX.utils.encode_col(column.sourceIndex),
@@ -950,6 +952,7 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
         existing: mapExistingForPlanning(destinationDataset, incoming, mappingsForPlan),
         destination: { headerRow: rows.headerRow, dataStartRow: rows.dataStartRow },
         comparedColumnIds: [...acceptedColumns],
+        writeColumnIds: [...acceptedColumns],
         ...(writeMode === 'update' ? { keyColumnIds: keyColumnIds.filter((columnId) => acceptedColumns.has(columnId)) } : {}),
       },
     }, 'Calculando resumo', {
@@ -1019,14 +1022,14 @@ export function App({ workerFactory = defaultWorkerFactory }: AppProps) {
   const exportInput = useCallback((plan: WritePlan, riskIds: readonly string[] = [], includeWarnings = false) => {
     if (!validationResult || !selectedDestination || !templateDataset || !activeTemplateIndex || !session.dataset) return null;
     return {
-      destination: destinationForExport(selectedDestination, templateDataset, activeTemplateIndex),
+      destination: destinationForExport(selectedDestination, templateDataset, activeTemplateIndex, automaticMode),
       mappings: acceptedMappings(mappings),
       writePlan: plan,
       validationResult,
       rejectedRows: buildRejectedRows(session.dataset, validationResult, plan, includeWarnings),
       reviewedRiskIds: riskIds,
     };
-  }, [activeTemplateIndex, mappings, selectedDestination, session.dataset, templateDataset, validationResult]);
+  }, [activeTemplateIndex, automaticMode, mappings, selectedDestination, session.dataset, templateDataset, validationResult]);
 
   const runExportRiskScan = useCallback(() => {
     if (!currentWritePlan || !activeTemplateBuffer) return;

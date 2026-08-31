@@ -14,6 +14,7 @@ export interface WritePlanInput {
   destination: WriteDestination;
   keyColumnIds?: readonly string[];
   comparedColumnIds?: readonly string[];
+  writeColumnIds?: readonly string[];
 }
 
 export interface WriteClear {

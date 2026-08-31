@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { planWrite } from '../../../src/domain/merge/plan-write';
+import { planWrite, planWriteInBatches } from '../../../src/domain/merge/plan-write';
 import type { DataRow, Dataset } from '../../../src/domain/dataset/types';
 
 function row(rowId: string, sourceRowNumber: number, values: DataRow['values']): DataRow {
@@ -11,6 +11,70 @@ function dataset(rows: DataRow[]): Dataset {
 }
 
 describe('planWrite', () => {
+  it('applies the mapped-column filter in batched planning', async () => {
+    const result = await planWriteInBatches({
+      mode: 'append',
+      incoming: dataset([
+        row('valid', 2, { id__1: 1, name__1: 'Ana' }),
+        row('unmapped-only', 3, { id__1: null, name__1: 'auxiliar' }),
+        row('spaces', 4, { id__1: '  ', name__1: 'auxiliar' }),
+      ]),
+      existing: dataset([]),
+      destination: { headerRow: 1, dataStartRow: 2 },
+      writeColumnIds: ['id__1'],
+    }, { batchSize: 1, onProgress: () => undefined });
+
+    expect(result.inserts.map(({ incomingRowId, destinationRow }) => [incomingRowId, destinationRow])).toEqual([
+      ['valid', 2],
+    ]);
+  });
+
+  it('ignores incoming rows empty in every mapped column for replace, append, and update', () => {
+    const incoming = dataset([
+      row('incoming-1', 2, { id__1: 1, name__1: 'Ana' }),
+      row('incoming-unmapped-only', 3, { id__1: null, name__1: 'auxiliar' }),
+      row('incoming-empty-text', 4, { id__1: '', name__1: null }),
+      row('incoming-spaces', 5, { id__1: '  ', name__1: 'auxiliar' }),
+      row('incoming-2', 6, { id__1: 2, name__1: '' }),
+    ]);
+    const writeColumnIds = ['id__1'];
+
+    const replace = planWrite({
+      mode: 'replace',
+      incoming,
+      existing: dataset([]),
+      destination: { headerRow: 1, dataStartRow: 10 },
+      writeColumnIds,
+    });
+    const append = planWrite({
+      mode: 'append',
+      incoming,
+      existing: dataset([row('existing-1', 20, { id__1: 9 })]),
+      destination: { headerRow: 19, dataStartRow: 20 },
+      writeColumnIds,
+    });
+    const update = planWrite({
+      mode: 'update',
+      incoming,
+      existing: dataset([row('existing-1', 20, { id__1: 1, name__1: 'Antiga' })]),
+      destination: { headerRow: 19, dataStartRow: 20 },
+      keyColumnIds: writeColumnIds,
+      writeColumnIds,
+    });
+
+    expect(replace.inserts.map(({ incomingRowId, destinationRow }) => [incomingRowId, destinationRow])).toEqual([
+      ['incoming-1', 10],
+      ['incoming-2', 11],
+    ]);
+    expect(append.inserts.map(({ incomingRowId, destinationRow }) => [incomingRowId, destinationRow])).toEqual([
+      ['incoming-1', 21],
+      ['incoming-2', 22],
+    ]);
+    expect(update.updates.map(({ incomingRowId }) => incomingRowId)).toEqual(['incoming-1']);
+    expect(update.inserts.map(({ incomingRowId }) => incomingRowId)).toEqual(['incoming-2']);
+    expect(update.rejected).toEqual([]);
+  });
+
   it('plans replace by clearing only data rows and assigning valid incoming rows sequentially', () => {
     const incoming = dataset([
       row('incoming-1', 2, { id__1: 10, name__1: 'Ana' }),

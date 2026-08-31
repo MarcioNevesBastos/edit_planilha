@@ -31,6 +31,7 @@ export interface ExportDestination {
   range: string;
   dataStartRow: number;
   templateRow: number;
+  automatic?: boolean;
   tablePath?: string;
   definedName?: DefinedNameIdentity;
   columns: readonly ExportDestinationColumn[];
@@ -267,19 +268,23 @@ export async function exportWorkbook(input: ExportInput, options?: ExportBatchOp
   }
 
   const worksheet = decode(working.readPart(sheet.path));
-  working.updatePart(
-    sheet.path,
-    await applyWritePlan(
-      worksheet,
-      preparedInput,
-      resolveMappings(preparedInput),
-      invalidRowIds,
-      options && {
-        batchSize: options.batchSize,
-        onProgress: ({ completed }) => reportProgress?.('write', completed),
-      },
-    ),
+  let exportedWorksheet = await applyWritePlan(
+    worksheet,
+    preparedInput,
+    resolveMappings(preparedInput),
+    invalidRowIds,
+    options && {
+      batchSize: options.batchSize,
+      onProgress: ({ completed }) => reportProgress?.('write', completed),
+    },
   );
+  if (preparedInput.destination.automatic && writeActions.length === 0) {
+    exportedWorksheet = removeAutomaticTemplateRow(
+      exportedWorksheet,
+      preparedInput.destination.templateRow,
+    );
+  }
+  working.updatePart(sheet.path, exportedWorksheet);
 
   if ((preparedInput.rejectedRows?.length ?? 0) > 0) {
     await addRejectedSheet(working, preparedInput.rejectedRows ?? [], options && {
@@ -838,6 +843,23 @@ function serializeIndexedWorksheet(worksheet: string, indexed: IndexedWorksheet)
     }),
   );
   return worksheet.replace(indexed.sheetData, updatedSheetData);
+}
+
+function removeAutomaticTemplateRow(worksheet: string, rowNumber: number): string {
+  const indexed = indexWorksheet(worksheet);
+  const template = indexed.rows.get(rowNumber);
+  if (!template) return worksheet;
+  const updatedSheetData = indexed.sheetData.replace(template.raw, '');
+  const withoutTemplate = worksheet.replace(indexed.sheetData, updatedSheetData);
+  return withoutTemplate.replace(
+    /(<dimension\b[^>]*\bref=")([^"]+)(")/,
+    (match, prefix: string, reference: string, suffix: string) => {
+      const range = parseRange(reference);
+      if (range.endRow !== rowNumber) return match;
+      const lastRow = Math.max(range.startRow, rowNumber - 1);
+      return `${prefix}${columnName(range.startColumn)}${range.startRow}:${columnName(range.endColumn)}${lastRow}${suffix}`;
+    },
+  );
 }
 
 function worksheetRowPattern(): RegExp {

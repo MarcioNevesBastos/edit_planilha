@@ -811,6 +811,7 @@ describe('final export safeguards', () => {
     const plan = worker.requests.find(({ type }) => type === 'PLAN_WRITE');
     expect(validation?.type === 'VALIDATE' && validation.dataset.rows[0].values.nome__1).toBe('Constante');
     expect(plan?.type === 'PLAN_WRITE' && plan.input.incoming.rows[0].values.nome__1).toBe('Constante');
+    expect(plan?.type === 'PLAN_WRITE' && plan.input.writeColumnIds).toEqual(['id__1', 'nome__1']);
   });
 
   it('invalidates an update plan immediately when key columns change', async () => {

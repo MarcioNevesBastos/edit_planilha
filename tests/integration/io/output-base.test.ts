@@ -6,6 +6,7 @@ import { openOoxmlPackage } from '../../../src/io/template/ooxml-package';
 import { prepareOutputBase } from '../../../src/io/template/output-base';
 import type { DatasetColumn } from '../../../src/domain/dataset/types';
 import { exportWorkbook } from '../../../src/io/template/export-workbook';
+import { planWrite } from '../../../src/domain/merge/plan-write';
 
 const columns: DatasetColumn[] = [
   { id: 'id__1', header: 'ID', sourceIndex: 0, detectedType: 'number' },
@@ -110,5 +111,48 @@ describe('output base preparation', () => {
       id__1: 1,
       nome__2: 'Ana',
     });
+  });
+
+  it('exports only the header when every incoming row is empty in mapped columns', async () => {
+    const prepared = await prepareOutputBase({ mode: 'none', columns });
+    const destination = {
+      ...prepared.destination,
+      automatic: true,
+      columns: columns.map((column, index) => ({ id: column.id, column: String.fromCharCode(65 + index) })),
+    };
+    const incoming = {
+      columns,
+      rows: [{
+        rowId: 'empty-1',
+        sourceRowNumber: 2,
+        values: { id__1: null, nome__1: '   ' },
+        originalValues: { id__1: null, nome__1: '   ' },
+      }],
+    };
+    const writePlan = planWrite({
+      mode: 'replace',
+      incoming,
+      existing: { columns, rows: [] },
+      destination: { headerRow: 1, dataStartRow: 2 },
+      writeColumnIds: columns.map(({ id }) => id),
+    });
+    const buffer = await (await exportWorkbook({
+      package: await openOoxmlPackage(prepared.buffer),
+      destination,
+      mappings: columns.map((column) => ({
+        sourceColumnId: column.id,
+        destinationColumnId: column.id,
+        confidence: 'exact' as const,
+        score: 1,
+        status: 'accepted' as const,
+      })),
+      writePlan,
+      validationResult: { isValid: true, issues: [] },
+    })).arrayBuffer();
+
+    const resultPackage = await openOoxmlPackage(buffer);
+    const worksheet = new TextDecoder().decode(resultPackage.readPart('xl/worksheets/sheet1.xml'));
+    expect(worksheet).toContain('<dimension ref="A1:B1"');
+    expect(worksheet).not.toContain('<row r="2">');
   });
 });
