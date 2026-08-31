@@ -216,7 +216,11 @@ export async function exportWorkbook(input: ExportInput, options?: ExportBatchOp
   const index = await indexWorkbook(working);
   const sheet = requireSheet(index.sheets, preparedInput.destination.sheetName);
   const invalidRowIds = validationErrorRowIds(preparedInput.validationResult);
-  const writeActions = validWriteActions(preparedInput.writePlan, invalidRowIds);
+  const writeActions = validWriteActions(
+    preparedInput.writePlan,
+    invalidRowIds,
+    preparedInput.destination.automatic ? preparedInput.destination.dataStartRow : undefined,
+  );
   const maxDestinationRow = Math.max(
     preparedInput.destination.dataStartRow - 1,
     ...writeActions.map(({ destinationRow }) => destinationRow),
@@ -450,6 +454,7 @@ function scanNamedRangeRisks(
     ...validWriteActions(
       input.writePlan,
       validationErrorRowIds(input.validationResult),
+      input.destination.automatic ? input.destination.dataStartRow : undefined,
     ).map(({ destinationRow }) => destinationRow),
   );
   const expands = targetLastRow > destinationRange.endRow;
@@ -565,7 +570,12 @@ function scanWorksheetRisks(
 ): void {
   const worksheet = decode(input.package.readPart(sheet.path));
   const invalidRowIds = validationErrorRowIds(input.validationResult);
-  const writeCells = targetCells(input.writePlan, mappings, invalidRowIds);
+  const writeCells = targetCells(
+    input.writePlan,
+    mappings,
+    invalidRowIds,
+    input.destination.automatic ? input.destination.dataStartRow : undefined,
+  );
   const destinationRange = parseRange(input.destination.range);
   const mergedRanges = [...worksheet.matchAll(/<mergeCell\b[^>]*\bref="([^"]+)"[^>]*\/?\s*>/g)]
     .flatMap((match) => safeParseRanges(match[1]));
@@ -611,7 +621,12 @@ function scanTableRisks(
   addRisk: (risk: ExportRisk) => void,
 ): void {
   const invalidRowIds = validationErrorRowIds(input.validationResult);
-  const writeCells = targetCells(input.writePlan, mappings, invalidRowIds);
+  const writeCells = targetCells(
+    input.writePlan,
+    mappings,
+    invalidRowIds,
+    input.destination.automatic ? input.destination.dataStartRow : undefined,
+  );
   const touchedTables = sheet.tables.filter((table) => {
     const range = parseRange(table.range);
     return table.path === input.destination.tablePath
@@ -741,7 +756,11 @@ function applyWritePlan(
   };
   if (!options) {
     for (const clear of input.writePlan.clears) processOperation({ destinationRow: clear.destinationRow });
-    for (const action of validWriteActions(input.writePlan, invalidRowIds)) {
+    for (const action of validWriteActions(
+      input.writePlan,
+      invalidRowIds,
+      input.destination.automatic ? input.destination.dataStartRow : undefined,
+    )) {
       processOperation({ destinationRow: action.destinationRow, values: action.values });
     }
     return Promise.resolve(serializeIndexedWorksheet(worksheet, indexed));
@@ -756,6 +775,12 @@ async function processExportWritePlan(
   options: ExportBatchOptions,
   processRow: (row: { destinationRow: number; values?: Record<string, CellValue> }) => void,
 ): Promise<void> {
+  const validActions = validWriteActions(
+    input.writePlan,
+    invalidRowIds,
+    input.destination.automatic ? input.destination.dataStartRow : undefined,
+  );
+  const destinationRows = new Map(validActions.map((action) => [action.incomingRowId, action.destinationRow]));
   const total = input.writePlan.clears.length
     + input.writePlan.inserts.length
     + input.writePlan.updates.length;
@@ -774,7 +799,7 @@ async function processExportWritePlan(
     options,
     (action) => {
       if (!invalidRowIds.has(action.incomingRowId)) {
-        processRow({ destinationRow: action.destinationRow, values: action.values });
+        processRow({ destinationRow: destinationRows.get(action.incomingRowId)!, values: action.values });
       }
     },
   );
@@ -785,7 +810,7 @@ async function processExportWritePlan(
     options,
     (action) => {
       if (!invalidRowIds.has(action.incomingRowId)) {
-        processRow({ destinationRow: action.destinationRow, values: action.values });
+        processRow({ destinationRow: destinationRows.get(action.incomingRowId)!, values: action.values });
       }
     },
   );
@@ -923,20 +948,27 @@ function cellXml(reference: string, value: CellValue | undefined, model?: string
 function validWriteActions(
   plan: WritePlan,
   invalidRowIds: ReadonlySet<string>,
+  compactFromRow?: number,
 ): WriteAction[] {
-  return [...plan.inserts, ...plan.updates].filter(
+  const actions = [...plan.inserts, ...plan.updates].filter(
     ({ incomingRowId }) => !invalidRowIds.has(incomingRowId),
   );
+  if (compactFromRow === undefined) return actions;
+  return actions.map((action, index) => ({
+    ...action,
+    destinationRow: compactFromRow + index,
+  }));
 }
 
 function targetCells(
   plan: WritePlan,
   mappings: readonly ResolvedMapping[],
   invalidRowIds: ReadonlySet<string>,
+  compactFromRow?: number,
 ): Array<{ column: number; row: number }> {
   const rows = [
     ...plan.clears.map(({ destinationRow }) => destinationRow),
-    ...validWriteActions(plan, invalidRowIds).map(({ destinationRow }) => destinationRow),
+    ...validWriteActions(plan, invalidRowIds, compactFromRow).map(({ destinationRow }) => destinationRow),
   ];
   return rows.flatMap((row) => mappings.map(({ destinationColumn }) => ({
     column: columnNumber(destinationColumn),

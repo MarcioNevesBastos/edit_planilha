@@ -155,4 +155,57 @@ describe('output base preparation', () => {
     expect(worksheet).toContain('<dimension ref="A1:B1"');
     expect(worksheet).not.toContain('<row r="2">');
   });
+
+  it('compacts valid automatic rows after invalid rows', async () => {
+    const prepared = await prepareOutputBase({ mode: 'none', columns });
+    const destination = {
+      ...prepared.destination,
+      automatic: true,
+      columns: columns.map((column, index) => ({ id: column.id, column: String.fromCharCode(65 + index) })),
+    };
+    const writePlan = {
+      mode: 'replace' as const,
+      headerRow: 1,
+      clears: [],
+      inserts: [
+        { incomingRowId: 'valid-1', destinationRow: 2, values: { id__1: 1, nome__1: 'Ana' } },
+        { incomingRowId: 'invalid', destinationRow: 3, values: { id__1: 2, nome__1: 'Inválida' } },
+        { incomingRowId: 'valid-2', destinationRow: 4, values: { id__1: 3, nome__1: 'Bia' } },
+      ],
+      updates: [],
+      kept: [],
+      duplicates: [],
+      rejected: [],
+      assignments: [],
+    };
+    const buffer = await (await exportWorkbook({
+      package: await openOoxmlPackage(prepared.buffer),
+      destination,
+      mappings: columns.map((column) => ({
+        sourceColumnId: column.id,
+        destinationColumnId: column.id,
+        confidence: 'exact' as const,
+        score: 1,
+        status: 'accepted' as const,
+      })),
+      writePlan,
+      validationResult: {
+        isValid: false,
+        issues: [{
+          rowId: 'invalid',
+          sourceRowNumber: 3,
+          columnId: 'id__1',
+          code: 'required',
+          value: null,
+          message: 'Inválida',
+        }],
+      },
+    }, { batchSize: 1, onProgress: () => undefined })).arrayBuffer();
+
+    const resultPackage = await openOoxmlPackage(buffer);
+    const worksheet = new TextDecoder().decode(resultPackage.readPart('xl/worksheets/sheet1.xml'));
+    expect(worksheet).toContain('<c r="A2"><v>1</v></c>');
+    expect(worksheet).toContain('<c r="A3"><v>3</v></c>');
+    expect(worksheet).not.toContain('<row r="4">');
+  });
 });
